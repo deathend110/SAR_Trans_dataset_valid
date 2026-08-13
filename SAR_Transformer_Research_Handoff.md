@@ -8,6 +8,8 @@
 
 ---
 
+## 注意：本仓库是G:\MATLAB-G\SAR_Trans_dataset_valid，这是专门的实验仓库。不是SAR_Transformer
+
 ## 0. 当前工作阶段与仓库状态
 
 项目仓库为 `deathend110/SAR_Transformer`。仓库定位是基于 Transformer 类图像恢复模型进行单比特 SAR（Synthetic Aperture Radar，合成孔径雷达）图像恢复。当前主要训练框架来自 KAIR/SwinIR，仓库还包含 Restormer 等模型代码。
@@ -62,17 +64,17 @@ SFT 阈值已有实现与相关实验经验
 
 因此网络解决的不是“从 ±1±j 原始回波恢复复数回波”，而是一个**图像域监督恢复问题**：
 
-\[
+$$
 F_\theta(I_{1b}) \approx I_{GT}.
-\]
+$$
 
 对于 9 帧序列：
 
-\[
+$$
 F_\theta(I_{1b}^{(0)},\ldots,I_{1b}^{(8)})
 \rightarrow
 (\hat I_{GT}^{(0)},\ldots,\hat I_{GT}^{(8)}).
-\]
+$$
 
 目标是每一帧恢复结果都尽量接近对应的全精度 SAR 成像 GT。
 
@@ -140,14 +142,14 @@ channel_60_clean = raw_data(1:3:end, :);
 
 设高精度复数回波为：
 
-\[
+$$
 S \in \mathbb C^{N_r\times N_a},
-\]
+$$
 
 其中：
 
-- \(N_r\)：距离向（fast time）采样点数；
-- \(N_a\)：方位向（slow time）采样点数。
+- $N_r$：距离向（fast time）采样点数；
+- $N_a$：方位向（slow time）采样点数。
 
 GT 链路：
 
@@ -270,17 +272,17 @@ F8 [1024,1536 ]   = 512H
 
 全局坐标与局部帧坐标关系可写成：
 
-\[
+$$
 u = 128k + w,
-\]
+$$
 
 其中：
 
-- \(k\in\{0,\ldots,8\}\) 为帧索引；
-- \(w\in[0,511]\) 为帧内局部列坐标；
-- \(u\in[0,1535]\) 为全局条带坐标。
+- $k\in\{0,\ldots,8\}$ 为帧索引；
+- $w\in[0,511]$ 为帧内局部列坐标；
+- $u\in[0,1535]$ 为全局条带坐标。
 
-这一定义对后续 Transformer 极其重要：不同帧中的同一个局部坐标 \((h,w)\) 并不对应同一全局地理位置；若要进行“同位置跨帧融合”，必须考虑 128 px 的已知几何平移。
+这一定义对后续 Transformer 极其重要：不同帧中的同一个局部坐标 $(h,w)$ 并不对应同一全局地理位置；若要进行“同位置跨帧融合”，必须考虑 128 px 的已知几何平移。
 
 ---
 
@@ -290,21 +292,21 @@ u = 128k + w,
 
 以固定 stripmap SAR 参数生成连续复数回波：
 
-\[
+$$
 S[n,m] = s(\tau_n,\eta_m),
-\]
+$$
 
 其中：
 
-\[
+$$
 \tau_n = T_{start} + \frac{n}{F_s},
-\]
+$$
 
 为距离向 fast-time 网格，
 
-\[
+$$
 \eta_m \approx \frac{m-m_0}{PRF},
-\]
+$$
 
 为方位向 slow-time 网格。
 
@@ -316,7 +318,7 @@ S[n,m] = s(\tau_n,\eta_m),
 
 ## 3.2 距离向 FFT 零填充上采样
 
-对于 \(S\in\mathbb C^{N_r\times N_a}\)，距离向倍率 \(q_r\)：
+对于 $S\in\mathbb C^{N_r\times N_a}$，距离向倍率 $q_r$：
 
 1. 沿第 1 维 FFT；
 2. `fftshift`；
@@ -336,7 +338,7 @@ S_up = ifft(ifftshift(Sf_up, 1), [], 1) * q_r;
 
 ## 3.3 方位向 FFT 零填充上采样
 
-方位向倍率 \(q_a\) 同理：
+方位向倍率 $q_a$ 同理：
 
 ```matlab
 Sf = fftshift(fft(S, [], 2), 2);
@@ -348,10 +350,10 @@ S_up = ifft(ifftshift(Sf_up, 2), [], 2) * q_a;
 
 BARU 的基本形式是：
 
-\[
+$$
 S^\uparrow
 = \mathcal U_a^{q_a}\mathcal U_r^{q_r}(S).
-\]
+$$
 
 当前实现先距离后方位：
 
@@ -370,27 +372,27 @@ end
 
 为公平比较 Range-only 和 BARU，引入总预量化采样预算：
 
-\[
+$$
 q_{total}=q_r q_a.
-\]
+$$
 
 Range-only：
 
-\[
+$$
 (q_r,q_a)=(q_{total},1).
-\]
+$$
 
 BARU：
 
-\[
+$$
 q_rq_a=q_{total},\qquad q_r>1,\ q_a>1.
-\]
+$$
 
 若采用均衡分配：
 
-\[
+$$
 q_r=q_a=\sqrt{q_{total}}.
-\]
+$$
 
 但 BARU 不要求一定均衡，实验可以扫描不同 range/azimuth allocation，只要总预算一致。
 
@@ -398,41 +400,41 @@ q_r=q_a=\sqrt{q_{total}}.
 
 历史 Range-only 使用：
 
-\[
+$$
 q_H=2.5,\qquad q_L=1.5.
-\]
+$$
 
 当双向均衡分解时：
 
-\[
+$$
 \sqrt{2.5}\approx1.5811,
 \qquad
 \sqrt{1.5}\approx1.2247.
-\]
+$$
 
 矩阵尺寸必须为整数，因此通用实现应使用：
 
-\[
+$$
 N_r^\uparrow=\operatorname{round}(q_rN_r),
 \qquad
 N_a^\uparrow=\operatorname{round}(q_aN_a).
-\]
+$$
 
 实际有效倍率定义为：
 
-\[
+$$
 q_r^{eff}=\frac{N_r^\uparrow}{N_r},
 \qquad
 q_a^{eff}=\frac{N_a^\uparrow}{N_a}.
-\]
+$$
 
 并建议后续时间网格/采样率使用实际倍率：
 
-\[
+$$
 F_s^\uparrow=q_r^{eff}F_s,
 \qquad
 PRF^\uparrow=q_a^{eff}PRF.
-\]
+$$
 
 原因是 SFT 相位显式依赖时间轴。如果矩阵实际尺寸和 nominal q 不完全一致，却仍使用 nominal q 构造时间坐标，会产生小的 deterministic phase/grid mismatch。
 
@@ -454,28 +456,28 @@ PRF^\uparrow=q_a^{eff}PRF.
 
 先估计上采样回波幅度尺度：
 
-\[
+$$
 \hat\sigma
 =\sqrt{\frac{2}{\pi}}\operatorname{mean}(|S^\uparrow|).
-\]
+$$
 
 阈值幅度：
 
-\[
+$$
 A_{RT}=A_s\hat\sigma.
-\]
+$$
 
 距离向随机相位：
 
-\[
+$$
 \phi_r(n)\sim\mathcal U(0,2\pi).
-\]
+$$
 
 阈值：
 
-\[
+$$
 U_{RT}(n,m)=A_{RT}e^{j\phi_r(n)},
-\]
+$$
 
 沿方位维广播。
 
@@ -491,15 +493,15 @@ U_master_seq = A_rt * exp(1i*phi_seq);
 
 BARU 示例代码中二维 RT 主要采用可分离随机相位：
 
-\[
+$$
 \phi_r(n)\sim U(0,2\pi),
 \qquad
 \phi_a(m)\sim U(0,2\pi),
-\]
+$$
 
-\[
+$$
 U(n,m)=A_{RT}e^{j(\phi_r(n)+\phi_a(m))}.
-\]
+$$
 
 代码：
 
@@ -515,20 +517,20 @@ U = A_rt * exp(1i*(phi_r + phi_a));
 
 SFT 同样先估计：
 
-\[
+$$
 \hat\sigma
 =\sqrt{\frac{2}{\pi}}\operatorname{mean}(|S^\uparrow|).
-\]
+$$
 
 使用 STR（signal-to-threshold ratio 风格的幅度参数）定义：
 
-\[
+$$
 A_u=\frac{\hat\sigma}{10^{STR_{dB}/20}}.
-\]
+$$
 
 二维 SFT：
 
-\[
+$$
 U_{SFT}(n,m)
 =
 A_u\exp\left\{j\left[
@@ -536,15 +538,15 @@ A_u\exp\left\{j\left[
 +2\pi f_a\eta_m
 +\phi_0
 \right]\right\}.
-\]
+$$
 
 其中：
 
-\[
+$$
 \tau_n=\frac{n-\lfloor N_r^\uparrow/2\rfloor}{F_s^\uparrow},
 \qquad
 \eta_m=\frac{m-\lfloor N_a^\uparrow/2\rfloor}{PRF^\uparrow}.
-\]
+$$
 
 统一函数：
 
@@ -556,27 +558,27 @@ U = build2DSFTThreshold(...,
 
 三种特例：
 
-- RSFT：\(f_r\neq0,\ f_a=0\)；
-- ASFT：\(f_r=0,\ f_a\neq0\)；
-- 2D-SFT：\(f_r\neq0,\ f_a\neq0\)。
+- RSFT：$f_r\neq0,\ f_a=0$；
+- ASFT：$f_r=0,\ f_a\neq0$；
+- 2D-SFT：$f_r\neq0,\ f_a\neq0$。
 
 SFT 是确定性阈值，不依赖 RNG。
 
 ### SFT 在不同 q 下的当前理解
 
-一个重要的工作假设是：在较低总采样预算 \(q<4\) 时，尤其把总预算拆成两个方向后，每个方向的冗余很弱，SFT 的增益可能不明显。
+一个重要的工作假设是：在较低总采样预算 $q<4$ 时，尤其把总预算拆成两个方向后，每个方向的冗余很弱，SFT 的增益可能不明显。
 
 例如：
 
-\[
+$$
 q_{total}=2.5
 \Rightarrow q_r\approx q_a\approx1.58,
-\]
+$$
 
-\[
+$$
 q_{total}=1.5
 \Rightarrow q_r\approx q_a\approx1.225.
-\]
+$$
 
 SFT 的作用可以理解为：在更多预量化采样点上提供随时间变化的判决边界。若每轴只增加很少采样点，则它能够提供的额外符号约束本来就有限。
 
@@ -586,33 +588,33 @@ SFT 的作用可以理解为：在更多预量化采样点上提供随时间变�
 
 本项目采用“加阈值”约定：
 
-\[
+$$
 S^\uparrow + U.
-\]
+$$
 
 实部与虚部分别判负：
 
-\[
+$$
 Q_R(n,m)=
 \begin{cases}
 -1,&\Re(S^\uparrow+U)<0\\
 +1,&\text{otherwise}
 \end{cases},
-\]
+$$
 
-\[
+$$
 Q_I(n,m)=
 \begin{cases}
 -1,&\Im(S^\uparrow+U)<0\\
 +1,&\text{otherwise}
 \end{cases}.
-\]
+$$
 
 复数量化输出：
 
-\[
+$$
 Q(n,m)=Q_R(n,m)+jQ_I(n,m).
-\]
+$$
 
 MATLAB：
 
@@ -638,13 +640,13 @@ S1 = complex(re,im);
 
 仅距离向预量化上采样：
 
-\[
+$$
 (q_r,q_a)=(q,1).
-\]
+$$
 
 随后使用 Range RT：
 
-\[
+$$
 S\rightarrow \mathcal U_r^q
 \rightarrow U_{RT,r}
 \rightarrow Q_{1b}
@@ -652,7 +654,7 @@ S\rightarrow \mathcal U_r^q
 \rightarrow base\ grid
 \rightarrow RCMC
 \rightarrow image.
-\]
+$$
 
 ### 与其他方法差异
 
@@ -681,13 +683,13 @@ S\rightarrow \mathcal U_r^q
 
 保持总预算：
 
-\[
+$$
 q=q_rq_a,
-\]
+$$
 
 同时在距离和方位进行 FFT zero-padding 上采样，再使用二维 RT（当前 BARU 示例采用 SplitRT）：
 
-\[
+$$
 S
 \rightarrow \mathcal U_r^{q_r}
 \rightarrow \mathcal U_a^{q_a}
@@ -698,7 +700,7 @@ S
 \rightarrow RC_{base}
 \rightarrow RCMC
 \rightarrow image.
-\]
+$$
 
 ### 与其他方法差异
 
@@ -733,16 +735,16 @@ BARU 已有论文和大量单帧实验基础；用户给出的示例代码在总
 
 ### 方法定义
 
-只在距离向上采样，再使用 RSFT 或统一 SFT 函数的 \(f_a=0\) 特例：
+只在距离向上采样，再使用 RSFT 或统一 SFT 函数的 $f_a=0$ 特例：
 
-\[
+$$
 S
 \rightarrow \mathcal U_r^q
 \rightarrow U_{SFT}(f_r,0)
 \rightarrow Q_{1b}
 \rightarrow RC
 \rightarrow image.
-\]
+$$
 
 ### 与其他方法差异
 
@@ -761,7 +763,7 @@ SFT 已有单独实验经验，但当前用于 H/L=1.5/2.5 连续序列的系统
 ### 尚未验证
 
 - 低 q 下是否仍能获得明显增益；
-- SFT 参数 \(STR,f_r,\phi_0\) 在 H/L 间如何共享；
+- SFT 参数 $STR,f_r,\phi_0$ 在 H/L 间如何共享；
 - 序列级 sigma 和单帧 sigma 哪种更合理。
 
 ---
@@ -772,7 +774,7 @@ SFT 已有单独实验经验，但当前用于 H/L=1.5/2.5 连续序列的系统
 
 双向上采样 + 2D-SFT：
 
-\[
+$$
 S
 \rightarrow \mathcal U_r^{q_r}
 \rightarrow \mathcal U_a^{q_a}
@@ -782,7 +784,7 @@ S
 \rightarrow 2D\ crop\ to\ base\ grid
 \rightarrow RCMC
 \rightarrow image.
-\]
+$$
 
 ### 与其他方法差异
 
@@ -791,7 +793,7 @@ S
 - sampling geometry 二维化；
 - q 可能分解为非整数倍率；
 - SFT 相位同时依赖 fast-time 和 slow-time；
-- SFT 时间轴依赖实际 \(F_s^\uparrow\) 和 \(PRF^\uparrow\)；
+- SFT 时间轴依赖实际 $F_s^\uparrow$ 和 $PRF^\uparrow$；
 - H/L 还要求 sequence-level consistency。
 
 ### 理论预期
@@ -822,13 +824,13 @@ BARU 和 SFT 可能互补：BARU 增加二维采样冗余，SFT 为新增样本�
 
 H/L 不应该仅理解为“高质量图片/低质量图片”。更准确地说：
 
-\[
+$$
 H=(q_r^H,q_a^H,\text{threshold protocol}),
-\]
+$$
 
-\[
+$$
 L=(q_r^L,q_a^L,\text{threshold protocol}).
-\]
+$$
 
 高采样率通常保留更多 1-bit measurement information，从而形成更接近 GT 的图像。
 
@@ -836,9 +838,9 @@ L=(q_r^L,q_a^L,\text{threshold protocol}).
 
 不同地理区域本身可能有不同散射结构、纹理复杂度和强散射点。因此实际图像质量是 acquisition condition 与 scene content 的共同函数：
 
-\[
+$$
 Q=f(q_r,q_a,\text{threshold},x_{scene}).
-\]
+$$
 
 所以方法筛选必须跨多个场景看 H/L gap 的稳定性，不能只看一个 patch。
 
@@ -846,9 +848,9 @@ Q=f(q_r,q_a,\text{threshold},x_{scene}).
 
 更合适的统计单元是：
 
-\[
+$$
 \mathcal S_i=\{F_{i,0},\ldots,F_{i,8}\}.
-\]
+$$
 
 不同序列之间尽量来自同一生成分布；序列内部恰恰应该保留相关性。
 
@@ -907,7 +909,7 @@ Q=f(q_r,q_a,\text{threshold},x_{scene}).
 
 ### C. H/L threshold 是否必须是同一个“连续场”的不同采样
 
-SFT 可以天然用同一 \(f_r,f_a,\phi_0\) 在不同采样网格上评价；RT 对非整数 BARU 网格没有简单 LCM 公共 master grid，需要设计共享随机性的方式。
+SFT 可以天然用同一 $f_r,f_a,\phi_0$ 在不同采样网格上评价；RT 对非整数 BARU 网格没有简单 LCM 公共 master grid，需要设计共享随机性的方式。
 
 ### D. sigma 的估计范围
 
@@ -934,29 +936,29 @@ H/L 不是地物类别，也不是人工图像标签。
 
 它们表示预量化 acquisition configuration 的不同采样预算：
 
-\[
+$$
 H:\ q_H\text{ 较高},
 \qquad
 L:\ q_L\text{ 较低}.
-\]
+$$
 
 Range-only 时：
 
-\[
+$$
 H=(q_H,1),\quad L=(q_L,1).
-\]
+$$
 
 BARU 时：
 
-\[
+$$
 H=(q_r^H,q_a^H),
 \quad q_r^Hq_a^H\approx q_H,
-\]
+$$
 
-\[
+$$
 L=(q_r^L,q_a^L),
 \quad q_r^Lq_a^L\approx q_L.
-\]
+$$
 
 ## 6.2 为什么是连续 H/L/H
 
@@ -978,37 +980,37 @@ L=(q_r^L,q_a^L),
 
 历史 mixed frame 生成流程不是“把 1-bit 回波直接拼起来”，而是：
 
-\[
+$$
 S\xrightarrow{H\ pipeline} RC_H,
-\]
+$$
 
-\[
+$$
 S\xrightarrow{L\ pipeline} RC_L.
-\]
+$$
 
 然后在统一 RC 网格中：
 
-\[
+$$
 RC_{mix}
 =
 M\odot \alpha RC_H+(1-M)\odot RC_L.
-\]
+$$
 
-其中 \(M\) 是 H/L 方位 mask。
+其中 $M$ 是 H/L 方位 mask。
 
 `energy_crop()` 在边界两侧取 buffer（历史值 64）估计能量：
 
-\[
+$$
 P_H=E(|RC_H|^2),
 \qquad
 P_L=E(|RC_L|^2),
-\]
+$$
 
 并把 H 对齐到 L：
 
-\[
+$$
 \alpha=\sqrt{\frac{P_L+\epsilon}{P_H+\epsilon}}.
-\]
+$$
 
 之后再按 mask 拼接。
 
@@ -1018,9 +1020,9 @@ P_L=E(|RC_L|^2),
 
 历史脚本对每一个 mixed frame 独立调用 `energy_crop()`，因此不同帧可能得到不同：
 
-\[
+$$
 \alpha_1,\alpha_2,\alpha_3,\ldots
-\]
+$$
 
 同一全局地理区域出现在不同重叠帧时，可能因为不同帧的边界局部能量估计而被乘上不同尺度。
 
@@ -1072,15 +1074,15 @@ channel_60_input = channel_60_clean;
 
 每条序列先切：
 
-\[
+$$
 1200\times2224
-\]
+$$
 
 的大块，然后每帧再取：
 
-\[
+$$
 1200\times1200
-\]
+$$
 
 的回波 patch，列起点每次移动 128。
 
@@ -1281,16 +1283,16 @@ A_u = sigma / (10^(STR_dB/20));
 
 理想状态：
 
-\[
+$$
 \mathcal S_1,\mathcal S_2,\ldots
 \sim P_{sequence},
-\]
+$$
 
 而不是要求：
 
-\[
+$$
 F_0,F_1,\ldots,F_8
-\]
+$$
 
 在同一序列内独立。
 
@@ -1300,8 +1302,8 @@ F_0,F_1,\ldots,F_8
 
 对于同一个总预算 q：
 
-- Range-only：\((q,1)\)；
-- BARU：\((q_r,q_a)\)，满足 \(q_rq_a\approx q\)。
+- Range-only：$(q,1)$；
+- BARU：$(q_r,q_a)$，满足 $q_rq_a\approx q$。
 
 不能让 BARU 因为额外使用更多总样本而得到不公平优势。
 
@@ -1365,15 +1367,15 @@ BARU  + SFT
 
 实验配置应支持：
 
-\[
+$$
 (q_H,q_L)\in\mathcal G.
-\]
+$$
 
 历史基准：
 
-\[
+$$
 (2.5,1.5).
-\]
+$$
 
 可考虑但不预先承诺的候选示例包括：
 
@@ -1402,29 +1404,29 @@ balanced BARU: (qr≈sqrt(q), qa≈sqrt(q))
 
 对同一回波/GT分别得到：
 
-\[
+$$
 I_H=\mathcal D_H(S),
 \qquad
 I_L=\mathcal D_L(S).
-\]
+$$
 
 至少记录：
 
-\[
+$$
 PSNR_H,\quad SSIM_H,
-\]
+$$
 
-\[
+$$
 PSNR_L,\quad SSIM_L,
-\]
+$$
 
-\[
+$$
 \Delta PSNR=PSNR_H-PSNR_L,
-\]
+$$
 
-\[
+$$
 \Delta SSIM=SSIM_H-SSIM_L.
-\]
+$$
 
 目标不是只找最高 H，而是找：
 
@@ -2098,9 +2100,9 @@ fixed calibration
 
 必须记住：
 
-\[
+$$
 u=128k+w.
-\]
+$$
 
 因此不同帧相同 local coordinate 并不是同一个 global location。
 
@@ -2134,6 +2136,7 @@ u=128k+w.
 # 16. 来源与代码依据
 
 本交接文档主要依据以下现有材料整理：
+
 
 - 仓库 `AGENTS.md`；
 - 仓库 `SAR_experiment_design.md`；
