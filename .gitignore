@@ -1,0 +1,13 @@
+.obsidian/
+.workbuddy/
+assert/
+
+prompt.md
+
+*.mat
+*.jpg
+*.png
+*.csv
+*.txt
+
+prompt.md

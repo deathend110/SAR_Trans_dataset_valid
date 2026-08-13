@@ -1,0 +1,9 @@
+function echo_RCMC_tr_ta=RCMC(Range_Com_tr_ta,lambda,fnrn,fnan,R0,c,v)
+[nrn,nan]=size(Range_Com_tr_ta);
+Range_Com_fr_ta=fftshift(fft(fftshift(Range_Com_tr_ta,1),[],1),1);
+TD=fftshift(fft(fftshift(Range_Com_fr_ta,2),[],2),2);
+RC=lambda^2*(R0).*(ones(nrn,1)*fnan.').^2/8/v/v;
+HR=exp(1i*2*pi*(fnrn*ones(1,nan))*2.*RC/c);
+TD_RC=TD.*HR;
+TD_fr_ta=fftshift(ifft(fftshift(TD_RC,2),[],2),2);
+echo_RCMC_tr_ta=fftshift(ifft(fftshift(TD_fr_ta,1),[],1),1);
