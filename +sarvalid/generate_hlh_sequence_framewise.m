@@ -31,7 +31,11 @@ for frame_idx = 1:num_frames
         repmat(mask.frames(frame_idx, end), 1, sequence_cfg.valid_margin)];
 
     frame_context = context;
-    frame_context.slow_time_center_index = floor(sequence_cfg.signal_width / 2);
+    % 不显式传入中心索引，使SFT按各自实际上采样宽度建立局部时间原点。
+    % 这对BARU尤其重要：其方位维长度通常不等于原始1200列。
+    if isfield(frame_context, "slow_time_center_index")
+        frame_context = rmfield(frame_context, "slow_time_center_index");
+    end
     pair_H = pair_cfg.H;
     pair_L = pair_cfg.L;
     pair_H.seed = pair_cfg.H.seed + frame_idx * 1000;

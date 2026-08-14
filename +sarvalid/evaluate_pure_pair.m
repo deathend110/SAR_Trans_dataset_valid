@@ -5,10 +5,13 @@ num_samples = numel(cache);
 h_images = cell(num_samples, 1);
 l_images = cell(num_samples, 1);
 for sample_idx = 1:num_samples
+    sample_pair = pair_cfg;
+    sample_pair.H.seed = pair_cfg.H.seed + cache(sample_idx).sample_id * 1000;
+    sample_pair.L.seed = pair_cfg.L.seed + cache(sample_idx).sample_id * 1000 + 1;
     [RC_H, ~] = sarvalid.generate_base_rc(cache(sample_idx).signal, ...
-        S60, pair_cfg.H);
+        S60, sample_pair.H);
     [RC_L, ~] = sarvalid.generate_base_rc(cache(sample_idx).signal, ...
-        S60, pair_cfg.L);
+        S60, sample_pair.L);
     h_images{sample_idx} = single(sarvalid.focus_base_rc(RC_H, S60, 512));
     l_images{sample_idx} = single(sarvalid.focus_base_rc(RC_L, S60, 512));
 end

@@ -25,7 +25,7 @@ sigma_hat = sqrt(2 / pi) * mean(abs(signal_up(:)));
 method = string(acq_cfg.method);
 seed = get_field(acq_cfg, "seed", 42);
 share_policy = string(get_field(acq_cfg, "share_policy", ...
-    "same_seed_independent_grid"));
+    "same_seed_family_independent_grid"));
 
 if endsWith(method, "_RT")
     As = get_nested_field(acq_cfg, "threshold", "As", 0.6);
