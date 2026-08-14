@@ -4,10 +4,11 @@ assert/
 
 prompt.md
 
+# 结果文件夹
+results/
 *.mat
 *.jpg
 *.png
 *.csv
 *.txt
 
-prompt.md
