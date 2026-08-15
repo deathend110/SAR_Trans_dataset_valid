@@ -18,6 +18,8 @@ Scene = string(manifest.Scene);
 detail = table(SampleID, Scene);
 metric_names = ["HPSNR", "HSSIM", "LPSNR", "LSSIM", ...
     "DeltaPSNR", "DeltaSSIM", "HEntropy", "LEntropy", ...
+    "HGradientRMSE", "LGradientRMSE", ...
+    "HBrightScattererError", "LBrightScattererError", ...
     "HOffSupport", "LOffSupport", ...
     "HRangeLeakage", "LRangeLeakage", ...
     "HAzimuthLeakage", "LAzimuthLeakage"];
@@ -29,8 +31,17 @@ initial_state = struct("completed_ids", zeros(0, 1), "detail", table());
 checkpoint_enabled = isfield(checkpoint_context, "path") && ...
     isfield(checkpoint_context, "signature");
 if checkpoint_enabled
-    state = sarvalid.load_checkpoint(string(checkpoint_context.path), ...
-        checkpoint_context.signature, initial_state);
+    resume = true;
+    if isfield(checkpoint_context, "resume")
+        resume = logical(checkpoint_context.resume);
+    end
+    if resume
+        state = sarvalid.load_checkpoint(string(checkpoint_context.path), ...
+            checkpoint_context.signature, initial_state);
+    else
+        state = initial_state;
+        state.signature = checkpoint_context.signature;
+    end
 else
     state = initial_state;
 end
@@ -76,6 +87,12 @@ for sample_idx = 1:num_samples
     detail.DeltaSSIM(sample_idx) = h_metrics.ssim - l_metrics.ssim;
     detail.HEntropy(sample_idx) = h_metrics.entropy;
     detail.LEntropy(sample_idx) = l_metrics.entropy;
+    detail.HGradientRMSE(sample_idx) = h_metrics.gradient_rmse;
+    detail.LGradientRMSE(sample_idx) = l_metrics.gradient_rmse;
+    detail.HBrightScattererError(sample_idx) = ...
+        h_metrics.bright_scatterer_error;
+    detail.LBrightScattererError(sample_idx) = ...
+        l_metrics.bright_scatterer_error;
     detail.HOffSupport(sample_idx) = h_diag.off_support_ratio;
     detail.LOffSupport(sample_idx) = l_diag.off_support_ratio;
     detail.HRangeLeakage(sample_idx) = h_diag.range_leakage_ratio;

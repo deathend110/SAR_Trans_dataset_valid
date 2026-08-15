@@ -64,6 +64,25 @@ cfg.stage_b.run_framewise_ablation = true;
 cfg.stage_b.run_180_sensitivity = true;
 cfg.stage_b.resume = true;
 
+% 独立的数据生成器选择实验，不复用既有Stage A/B输出或checkpoint。
+cfg.generator_compare.methods = ["Range_2D_SFT", "BARU_RT"];
+cfg.generator_compare.hl_pairs = [4, 2; 2.5, 1.5];
+cfg.generator_compare.baru_alpha = [0.35, 0.50, 0.65];
+cfg.generator_compare.baru_As = 0.4:0.1:0.8;
+cfg.generator_compare.rt_seed_families = ...
+    cfg.threshold_seed + (0:4) * 1000003;
+cfg.generator_compare.difficulty_tolerance = struct( ...
+    "l_ssim", 0.005, "delta_ssim", 0.01, ...
+    "expanded_l_ssim", 0.01, "expanded_delta_ssim", 0.02);
+cfg.generator_compare.bootstrap_repetitions = 10000;
+cfg.generator_compare.bootstrap_seed = 2026;
+cfg.generator_compare.decision.mean_ssim_disadvantage_limit = 0.005;
+cfg.generator_compare.decision.overlap_ssim_loss_tolerance = 0.005;
+cfg.generator_compare.decision.boundary_jump_db_tolerance = 0.1;
+cfg.generator_compare.output_root = fullfile( ...
+    repo_root, "results_generator_comparison");
+cfg.generator_compare.resume = true;
+
 cfg.diagnostics.support_threshold_ratio = 0.35;
 cfg.diagnostics.save_representative_rc = true;
 cfg.runtime.num_workers = 0;

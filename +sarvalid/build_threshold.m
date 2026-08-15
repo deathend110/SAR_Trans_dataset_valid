@@ -57,7 +57,9 @@ STR_dB = get_nested_field(acq_cfg, "threshold", "STR_dB", 0);
 fr_over_Br = get_nested_field(acq_cfg, "threshold", "fr_over_Br", 0);
 fa_over_Ba = get_nested_field(acq_cfg, "threshold", "fa_over_Ba", 0);
 phi0 = get_nested_field(acq_cfg, "threshold", "phi0", 0);
-if startsWith(method, "Range_")
+% 旧Range_SFT保持距离向一维阈值；Range_2D_SFT即使方位不
+% 上采样，也允许在原始PRF网格上使用合法的方位单频。
+if method == "Range_SFT"
     fa_over_Ba = 0;
 end
 

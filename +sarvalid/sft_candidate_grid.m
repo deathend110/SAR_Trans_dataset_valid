@@ -25,7 +25,7 @@ fa_limit = cfg.threshold.nyquist_margin * ...
 
 if isempty(best)
     STR_values = cfg.threshold.STR_coarse_dB;
-    if startsWith(method, "Range_")
+    if method == "Range_SFT"
         fr_values = bounded_grid(cfg.threshold.range_frequency_step, ...
             fr_limit, cfg.threshold.frequency_cap);
         fa_values = 0;
@@ -40,7 +40,7 @@ else
     STR_values = unique(best.STRdB + cfg.threshold.fine_STR_offsets_dB);
     fr_values = bounded_values(best.FrOverBr + ...
         cfg.threshold.fine_frequency_offsets, fr_limit);
-    if startsWith(method, "Range_")
+    if method == "Range_SFT"
         fa_values = 0;
     else
         fa_values = bounded_values(best.FaOverBa + ...
