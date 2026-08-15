@@ -7,6 +7,7 @@ prompt.md
 # 结果文件夹
 results/
 results_generator_comparison
+results_generator_confirmation_v2/
 *.mat
 *.jpg
 *.png

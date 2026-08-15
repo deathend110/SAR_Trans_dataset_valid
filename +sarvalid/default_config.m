@@ -83,6 +83,45 @@ cfg.generator_compare.output_root = fullfile( ...
     repo_root, "results_generator_comparison");
 cfg.generator_compare.resume = true;
 
+% 独立确认实验：旧验证集仅作桥接，新轨迹承担最终冻结判断。
+cfg.generator_confirmation.version = "generator_confirmation_v2";
+cfg.generator_confirmation.methods = [ ...
+    "Range_2D_SFT", "BARU_RT", "Range_NonzeroFa_SFT"];
+cfg.generator_confirmation.hl_pairs = [4, 2; 2.5, 1.5];
+cfg.generator_confirmation.baru_coarse_alpha = [0.35, 0.50, 0.65, 0.80];
+cfg.generator_confirmation.baru_coarse_As = [0.20, 0.30, 0.40];
+cfg.generator_confirmation.baru_fine_offsets = ...
+    [-0.10, -0.05, 0, 0.05, 0.10];
+cfg.generator_confirmation.baru_alpha_bounds = [0.20, 0.90];
+cfg.generator_confirmation.baru_As_bounds = [0.10, 0.50];
+cfg.generator_confirmation.baru_boundary_gain_tolerance = 0.001;
+cfg.generator_confirmation.rt_seed_families = ...
+    cfg.threshold_seed + (0:4) * 1000003;
+cfg.generator_confirmation.strict_difficulty_tolerance = struct( ...
+    "l_ssim", 0.005, "delta_ssim", 0.01);
+cfg.generator_confirmation.range_micro_STR_offsets_dB = -1:0.25:1;
+cfg.generator_confirmation.range_micro_frequency_offsets = -0.2:0.05:0.2;
+cfg.generator_confirmation.nonzero_fa_min = 0.1;
+cfg.generator_confirmation.confirmation_trajectories_per_scene = 2;
+cfg.generator_confirmation.confirmation_samples_per_trajectory = 10;
+cfg.generator_confirmation.confirmation_sample_id_start = 100001;
+cfg.generator_confirmation.sequence_files_per_scene = 5;
+cfg.generator_confirmation.sequence_id_start = 200001;
+cfg.generator_confirmation.bootstrap_repetitions = 10000;
+cfg.generator_confirmation.bootstrap_seed = 2026;
+cfg.generator_confirmation.tail_noninferiority_margin = 0.005;
+cfg.generator_confirmation.catastrophic_minimum_margin = 0.01;
+cfg.generator_confirmation.mean_noninferiority_margin = 0.005;
+cfg.generator_confirmation.structure_relative_margin = 0.02;
+cfg.generator_confirmation.seed_spread_fraction = 0.20;
+cfg.generator_confirmation.overlap_ssim_loss_tolerance = 0.005;
+cfg.generator_confirmation.boundary_jump_db_tolerance = 0.1;
+cfg.generator_confirmation.output_root = fullfile( ...
+    repo_root, "results_generator_confirmation_v2");
+cfg.generator_confirmation.resume = true;
+cfg.generator_confirmation.dry_run = false;
+cfg.generator_confirmation.stop_after = "C5";
+
 cfg.diagnostics.support_threshold_ratio = 0.35;
 cfg.diagnostics.save_representative_rc = true;
 cfg.runtime.num_workers = 0;

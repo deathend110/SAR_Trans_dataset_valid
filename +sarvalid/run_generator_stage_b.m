@@ -1,7 +1,13 @@
-function outputs = run_generator_stage_b(cfg, S60, manifest, locked_generators)
+function outputs = run_generator_stage_b( ...
+        cfg, S60, manifest, locked_generators, protocol)
 %RUN_GENERATOR_STAGE_B 对锁定生成器执行九帧连续序列验证。
 
-stage_dir = fullfile(cfg.generator_compare.output_root, "stage_b");
+if nargin < 5
+    protocol = struct();
+end
+stage_dir = get_field(protocol, "output_dir", ...
+    fullfile(cfg.generator_compare.output_root, "stage_b"));
+resume = get_field(protocol, "resume", cfg.generator_compare.resume);
 sarvalid.ensure_dir(stage_dir);
 calibration_manifest = manifest(manifest.Split == "calibration", :);
 evaluation_manifest = manifest(manifest.Split == "evaluation", :);
@@ -26,12 +32,12 @@ for lock_idx = 1:numel(locked_generators)
     writetable(norm_stats, fullfile(task_dir, "normalization.csv"));
 
     signature = stage_b_signature(cfg, S60, pair, ...
-        lock.seed_families, evaluation_manifest, norm_stats);
+        lock.seed_families, evaluation_manifest, norm_stats, protocol);
     checkpoint_path = string(fullfile(task_dir, "sequence_checkpoint.mat"));
     initial = struct("completed_keys", strings(0, 1), ...
         "seed_detail", table(), "frame_detail", table(), ...
         "overlap_detail", table());
-    if cfg.generator_compare.resume
+    if resume
         state = sarvalid.load_checkpoint(checkpoint_path, signature, initial);
     else
         state = initial;
@@ -169,12 +175,15 @@ pair.L.seed = seed_family + sequence_id * 1000 + 1;
 end
 
 function signature = stage_b_signature( ...
-        cfg, S60, pair, seeds, manifest, norm_stats)
+        cfg, S60, pair, seeds, manifest, norm_stats, protocol)
 high = sarvalid.resolve_acquisition(pair.H, ...
     [cfg.sequence.signal_height, cfg.sequence.block_width], S60);
 low = sarvalid.resolve_acquisition(pair.L, ...
     [cfg.sequence.signal_height, cfg.sequence.block_width], S60);
-signature = struct("experiment", cfg.experiment_name + "_generator_compare", ...
+experiment = get_field(protocol, "experiment", ...
+    cfg.experiment_name + "_generator_compare");
+signature_context = get_field(protocol, "signature_context", struct());
+signature = struct("experiment", experiment, ...
     "stage", "generator_stage_b", "pair", pair, ...
     "rt_seed_families", seeds, ...
     "effective_grid_H", compact_grid(high), ...
@@ -182,7 +191,8 @@ signature = struct("experiment", cfg.experiment_name + "_generator_compare", ...
     "manifest", manifest(:, ["SequenceID", "Scene", "File", "CStart"]), ...
     "normalization", norm_stats, ...
     "normalization_protocol", cfg.normalization, ...
-    "sequence", cfg.sequence, "imaging", imaging_signature(S60));
+    "sequence", cfg.sequence, "signature_context", signature_context, ...
+    "imaging", imaging_signature(S60));
 end
 
 function row = sequence_seed_row( ...
@@ -303,5 +313,13 @@ if isempty(input)
     output = rows;
 else
     output = [input; rows];
+end
+end
+
+function value = get_field(input, name, default_value)
+if isfield(input, name)
+    value = input.(name);
+else
+    value = default_value;
 end
 end

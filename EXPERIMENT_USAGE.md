@@ -80,3 +80,46 @@ result = run_generator_threshold_comparison(cfg);
 - `generator_decision_report.csv` 和 `generator_comparison_final.mat`
 
 将 `cfg.generator_compare.resume=false` 可忽略同目录已有 checkpoint 并从当前配置重新计算；建议新协议仍使用新的 `output_root`，以保留既有实验审计链。
+
+## 独立确认实验 V2
+
+`run_generator_confirmation_v2.m` 使用未进入旧 Stage A/B 的新轨迹，确认
+`Range_2D_SFT` 与扩展 `BARU_RT` 的最终生成器选择。旧 70 样本只作桥接复现，
+最终判据使用 140 个新样本和 7/28 条新标定/评估序列。`2.5/1.5` 另运行
+`Range_NonzeroFa_SFT` 辅助臂，但其结果不参与主生成器自动冻结。
+
+先生成清单、哈希和预注册文件：
+
+```matlab
+cfg = sarvalid.default_config();
+cfg.generator_confirmation.dry_run = true;
+preview = run_generator_confirmation_v2(cfg);
+```
+
+输出根目录默认为 `results_generator_confirmation_v2`。dry-run 应生成 14 个
+development、70 个 bridge、140 个 confirmation 样本，以及 7 条 calibration、
+28 条 evaluation 序列；不会启动成像或参数搜索。
+
+完整实验应严格分阶段启动，避免提前查看 confirmation 结果后调整参数：
+
+```matlab
+cfg = sarvalid.default_config();
+cfg.generator_confirmation.dry_run = false;
+
+cfg.generator_confirmation.stop_after = "C1"; % 先关闭BARU边界
+c1 = run_generator_confirmation_v2(cfg);
+
+cfg.generator_confirmation.stop_after = "C2"; % 再完成严格难度匹配
+c2 = run_generator_confirmation_v2(cfg);
+
+cfg.generator_confirmation.stop_after = "C3"; % 旧集桥接和新样本盲测
+c3 = run_generator_confirmation_v2(cfg);
+
+cfg.generator_confirmation.stop_after = "C5"; % 九帧验证与最终报告
+final = run_generator_confirmation_v2(cfg);
+```
+
+如果 C1 最优候选仍受硬边界截断，入口写出 `BARU_search_not_closed` 后停止；
+如果 C2 未通过 `0.005/0.01` 首轮难度容差，入口写出
+`difficulty_unmatched_descriptive_only` 后停止。恢复时 checkpoint 会核验参数网格、
+清单、seed、有效倍率、归一化、成像参数和冻结门槛，禁止静默复用旧协议结果。
