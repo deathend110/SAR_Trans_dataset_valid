@@ -123,6 +123,28 @@ cfg.generator_confirmation.resume = true;
 cfg.generator_confirmation.dry_run = false;
 cfg.generator_confirmation.stop_after = "C5";
 
+% Range+2D-SFT生产参数搜索V3：复用V2的35条连续序列，不设置验证集。
+cfg.range_2dsft_v3.version = "range_2dsft_search_v3";
+cfg.range_2dsft_v3.hl_pairs = [4, 2; 2.5, 1.5];
+cfg.range_2dsft_v3.STR_grid = -10:2:10;
+cfg.range_2dsft_v3.fr_grid = 0:0.2:4;
+cfg.range_2dsft_v3.fa_grid = 0:0.2:4;
+cfg.range_2dsft_v3.fine_STR_offsets = -2:1:2;
+cfg.range_2dsft_v3.fine_frequency_offsets = -0.2:0.05:0.2;
+cfg.range_2dsft_v3.low_percentile = 0.99;
+cfg.range_2dsft_v3.high_percentile = 99.9;
+cfg.range_2dsft_v3.normalization_roi_size = 600;
+cfg.range_2dsft_v3.metric_patch_size = 512;
+cfg.range_2dsft_v3.energy_buffer = 64;
+cfg.range_2dsft_v3.manifest_source = fullfile( ...
+    repo_root, "results_generator_confirmation_v2", ...
+    "manifests", "sequence.csv");
+cfg.range_2dsft_v3.output_root = fullfile( ...
+    repo_root, "results_range_2dsft_v3");
+cfg.range_2dsft_v3.resume = true;
+cfg.range_2dsft_v3.dry_run = false;
+cfg.range_2dsft_v3.stop_after = "final";
+
 cfg.diagnostics.support_threshold_ratio = 0.35;
 cfg.diagnostics.save_representative_rc = true;
 cfg.runtime.num_workers = 0;
