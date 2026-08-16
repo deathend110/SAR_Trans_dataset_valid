@@ -120,6 +120,26 @@ classdef TestGeneratorConfirmation < matlab.unittest.TestCase
                 "rate_dependent_no_automatic_freeze");
             testCase.verifyFalse(report.RangeSelected(end));
         end
+
+        function testDifficultyAndDiagnosticsDoNotGateDirectEffect(testCase)
+            [c1, c2, stage_a, stage_b, cfg] = confirmation_fixture();
+            c1.boundary_audit.SearchClosed(:) = false;
+            c2.difficulty_matching.DifficultyMatched(:) = false;
+
+            range_mask = stage_a.confirmation_sample_detail.Method == ...
+                "Range_2D_SFT";
+            stage_a.confirmation_sample_detail.HGradientRMSE(range_mask) = 1;
+            stage_a.confirmation_sample_detail.LGradientRMSE(range_mask) = 1;
+
+            [comparison, report] = sarvalid.compare_generator_confirmation( ...
+                c1, c2, stage_a, stage_b, cfg);
+            testCase.verifyTrue(all(comparison.RangeSelectedForPair));
+            testCase.verifyFalse(all(comparison.SearchClosed));
+            testCase.verifyFalse(all(comparison.StrictDifficultyMatched));
+            testCase.verifyFalse(all(comparison.StructurePass));
+            testCase.verifyEqual(report.Outcome(end), ...
+                "freeze_range_sft_open2d");
+        end
     end
 end
 

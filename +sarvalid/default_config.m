@@ -83,7 +83,7 @@ cfg.generator_compare.output_root = fullfile( ...
     repo_root, "results_generator_comparison");
 cfg.generator_compare.resume = true;
 
-% 独立确认实验：旧验证集仅作桥接，新轨迹承担最终冻结判断。
+% 独立确认实验：直接比较Range+2D-SFT与BARU+RT的成像效果。
 cfg.generator_confirmation.version = "generator_confirmation_v2";
 cfg.generator_confirmation.methods = [ ...
     "Range_2D_SFT", "BARU_RT", "Range_NonzeroFa_SFT"];
@@ -97,6 +97,7 @@ cfg.generator_confirmation.baru_As_bounds = [0.10, 0.50];
 cfg.generator_confirmation.baru_boundary_gain_tolerance = 0.001;
 cfg.generator_confirmation.rt_seed_families = ...
     cfg.threshold_seed + (0:4) * 1000003;
+% 仅用于选择相近候选和记录难度误差，不作为运行或推荐门槛。
 cfg.generator_confirmation.strict_difficulty_tolerance = struct( ...
     "l_ssim", 0.005, "delta_ssim", 0.01);
 cfg.generator_confirmation.range_micro_STR_offsets_dB = -1:0.25:1;

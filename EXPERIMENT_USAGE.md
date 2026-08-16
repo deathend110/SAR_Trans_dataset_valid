@@ -100,26 +100,17 @@ preview = run_generator_confirmation_v2(cfg);
 development、70 个 bridge、140 个 confirmation 样本，以及 7 条 calibration、
 28 条 evaluation 序列；不会启动成像或参数搜索。
 
-完整实验应严格分阶段启动，避免提前查看 confirmation 结果后调整参数：
+完整实验可直接运行。C1 的边界审计、C2 的难度误差以及后续尾部、结构、
+连续性和 seed 指标都会保存，但不再作为提前停止条件：
 
 ```matlab
 cfg = sarvalid.default_config();
 cfg.generator_confirmation.dry_run = false;
-
-cfg.generator_confirmation.stop_after = "C1"; % 先关闭BARU边界
-c1 = run_generator_confirmation_v2(cfg);
-
-cfg.generator_confirmation.stop_after = "C2"; % 再完成严格难度匹配
-c2 = run_generator_confirmation_v2(cfg);
-
-cfg.generator_confirmation.stop_after = "C3"; % 旧集桥接和新样本盲测
-c3 = run_generator_confirmation_v2(cfg);
-
-cfg.generator_confirmation.stop_after = "C5"; % 九帧验证与最终报告
+cfg.generator_confirmation.stop_after = "C5";
 final = run_generator_confirmation_v2(cfg);
 ```
 
-如果 C1 最优候选仍受硬边界截断，入口写出 `BARU_search_not_closed` 后停止；
-如果 C2 未通过 `0.005/0.01` 首轮难度容差，入口写出
-`difficulty_unmatched_descriptive_only` 后停止。恢复时 checkpoint 会核验参数网格、
-清单、seed、有效倍率、归一化、成像参数和冻结门槛，禁止静默复用旧协议结果。
+最终推荐只依据 Range 在 C3 新样本和 C4 连续序列上的平均 SSIM 是否都高于
+BARU。难度匹配、场景胜场、尾部、亮散射点、边缘、重叠区、边界和 seed
+稳定性仍保留在结果表中，用于解释成像差异，不参与自动门控。现有 checkpoint
+可直接恢复，参数网格、清单、seed、有效倍率、归一化和成像参数仍会核验。

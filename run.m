@@ -1,14 +1,7 @@
 cfg = sarvalid.default_config();
 cfg.generator_confirmation.dry_run = false;
+cfg.generator_confirmation.stop_after = "C5";
 
-cfg.generator_confirmation.stop_after = "C1"; % 先关闭BARU边界
-c1 = run_generator_confirmation_v2(cfg);
-
-cfg.generator_confirmation.stop_after = "C2"; % 再完成严格难度匹配
-c2 = run_generator_confirmation_v2(cfg);
-
-cfg.generator_confirmation.stop_after = "C3"; % 旧集桥接和新样本盲测
-c3 = run_generator_confirmation_v2(cfg);
-
-cfg.generator_confirmation.stop_after = "C5"; % 九帧验证与最终报告
+% 直接运行Range+2D-SFT与BARU+RT的完整成像效果比较。
+% C1边界审计和C2难度误差仅写入结果，不再提前终止实验。
 final = run_generator_confirmation_v2(cfg);

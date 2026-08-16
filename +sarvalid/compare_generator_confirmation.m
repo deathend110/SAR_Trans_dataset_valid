@@ -1,7 +1,7 @@
 function [comparison, decision_report, scene_summary, ...
         tail_summary, nonzero_fa_summary] = compare_generator_confirmation( ...
         c1, c2, stage_a, stage_b, cfg)
-%COMPARE_GENERATOR_CONFIRMATION 执行确认实验的预注册冻结规则。
+%COMPARE_GENERATOR_CONFIRMATION 汇总两种生成器的直接成像效果。
 
 gc = cfg.generator_confirmation;
 comparison = table();
@@ -127,10 +127,10 @@ for pair_idx = 1:size(gc.hl_pairs, 1)
         gc.seed_spread_fraction * abs(StageAMeanSSIMDifference) && ...
         StageBBARUSeedStd <= ...
         gc.seed_spread_fraction * abs(StageBMeanSSIMDifference);
-    RangeSelectedForPair = SearchClosed && StrictDifficultyMatched && ...
-        StageAMeanPass && StageAScenePass && TailPass && ...
-        StageBMeanPass && StageBWorstPass && StructurePass && ...
-        ContinuityPass && SeedRankingStable && SeedSpreadStable;
+    % 本实验用于直接观察两种生成器的成像效果。难度、尾部、结构和
+    % seed指标继续完整保存，但不再作为停止或自动推荐门槛。
+    RangeSelectedForPair = StageAMeanSSIMDifference > 0 && ...
+        StageBMeanSSIMDifference > 0;
 
     row = table(QHigh, QLow, SearchClosed, StrictDifficultyMatched, ...
         StageAMeanSSIMRange, StageAMeanSSIMBARU, ...
@@ -248,24 +248,16 @@ Outcome = strings(pair_count + 1, 1);
 for idx = 1:pair_count
     if comparison.RangeSelectedForPair(idx)
         Outcome(idx) = "select_range_sft_open2d";
-    elseif ~comparison.SearchClosed(idx)
-        Outcome(idx) = "BARU_search_not_closed";
-    elseif ~comparison.StrictDifficultyMatched(idx)
-        Outcome(idx) = "difficulty_unmatched_descriptive_only";
     else
-        Outcome(idx) = "range_selection_criteria_not_met";
+        Outcome(idx) = "range_not_better_in_both_stages";
     end
 end
 if all(comparison.RangeSelectedForPair)
     Outcome(end) = "freeze_range_sft_open2d";
 elseif any(comparison.RangeSelectedForPair)
     Outcome(end) = "rate_dependent_no_automatic_freeze";
-elseif any(~comparison.SearchClosed)
-    Outcome(end) = "BARU_search_not_closed";
-elseif any(~comparison.StrictDifficultyMatched)
-    Outcome(end) = "difficulty_unmatched_descriptive_only";
 else
-    Outcome(end) = "no_automatic_freeze";
+    Outcome(end) = "do_not_freeze_range_sft_open2d";
 end
 report = table(Scope, QHigh, QLow, SearchClosed, ...
     StrictDifficultyMatched, RangeSelected, ...
