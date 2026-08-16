@@ -4,6 +4,9 @@ assert/
 
 prompt.md
 
+# 参考文献文件夹
+papers/
+
 # 结果文件夹
 results/
 results_generator_comparison
