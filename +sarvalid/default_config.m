@@ -145,6 +145,39 @@ cfg.range_2dsft_v3.resume = true;
 cfg.range_2dsft_v3.dry_run = false;
 cfg.range_2dsft_v3.stop_after = "final";
 
+% H/L连续序列归一化消融：比较旧分支统计与H/L联合统一统计。
+cfg.hlh_normalization_ablation.version = "hlh_normalization_ablation_v1";
+cfg.hlh_normalization_ablation.hl_pairs = [4, 2; 2.5, 1.5];
+cfg.hlh_normalization_ablation.policies = ...
+    ["legacy_split", "joint_hl_shared"];
+cfg.hlh_normalization_ablation.low_percentile = 0.99;
+cfg.hlh_normalization_ablation.high_percentile = 99.9;
+cfg.hlh_normalization_ablation.normalization_roi_size = 600;
+cfg.hlh_normalization_ablation.metric_patch_size = 512;
+cfg.hlh_normalization_ablation.energy_buffer = 64;
+cfg.hlh_normalization_ablation.manifest_source = fullfile( ...
+    repo_root, "results_range_2dsft_v3", "manifests", "sequence.csv");
+cfg.hlh_normalization_ablation.locked_source = fullfile( ...
+    repo_root, "results_range_2dsft_v3", "locked_parameters.csv");
+cfg.hlh_normalization_ablation.output_root = fullfile( ...
+    repo_root, "results_hlh_normalization_ablation");
+cfg.hlh_normalization_ablation.resume = true;
+cfg.hlh_normalization_ablation.dry_run = false;
+cfg.hlh_normalization_ablation.run_fixed_example = true;
+cfg.hlh_normalization_ablation.example_scene = "SAR_Dataset_city1_histeq";
+cfg.hlh_normalization_ablation.example_file = "rstart 301.mat";
+cfg.hlh_normalization_ablation.example_cstart = 7584;
+cfg.hlh_normalization_ablation.decision.edge_jump_reduction = 0.50;
+cfg.hlh_normalization_ablation.decision.psnr_roughness_reduction = 0.25;
+cfg.hlh_normalization_ablation.decision.ssim_margin = 0.005;
+cfg.hlh_normalization_ablation.decision.mean_psnr_margin_db = 0.2;
+cfg.hlh_normalization_ablation.decision.f4_psnr_margin_db = 0.2;
+cfg.hlh_normalization_ablation.decision.f4_ssim_margin = 0.005;
+cfg.hlh_normalization_ablation.decision.scene_roughness_wins = 5;
+cfg.hlh_normalization_ablation.decision.overlap_loss_delta = 0.001;
+cfg.hlh_normalization_ablation.decision.structure_relative_margin = 0.02;
+cfg.hlh_normalization_ablation.decision.boundary_jump_db = 0.1;
+
 cfg.diagnostics.support_threshold_ratio = 0.35;
 cfg.diagnostics.save_representative_rc = true;
 cfg.runtime.num_workers = 0;
