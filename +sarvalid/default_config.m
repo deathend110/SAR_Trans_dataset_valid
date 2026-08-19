@@ -125,7 +125,7 @@ cfg.generator_confirmation.stop_after = "C5";
 
 % Range+2D-SFT生产参数搜索V3：复用V2的35条连续序列，不设置验证集。
 cfg.range_2dsft_v3.version = "range_2dsft_search_v3";
-cfg.range_2dsft_v3.hl_pairs = [4, 2; 2.5, 1.5];
+cfg.range_2dsft_v3.hl_pairs = [4, 2; 2.5, 1.5; 3.25, 1.75];
 cfg.range_2dsft_v3.STR_grid = -10:2:10;
 cfg.range_2dsft_v3.fr_grid = 0:0.2:4;
 cfg.range_2dsft_v3.fa_grid = 0:0.2:4;
