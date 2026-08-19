@@ -12,6 +12,7 @@ clear; clc;
 %% ========================================================================
 
 %% ============================== 参数区 ==================================
+% 每一行是一套生产参数；H/L严格共享STR、fr、fa和phi0，仅q不同。
 PARAMETERS = table( ...
     [4; 2.5], ...          % QHigh
     [2; 1.5], ...          % QLow
@@ -22,17 +23,19 @@ PARAMETERS = table( ...
     'VariableNames', [ ...
     "QHigh", "QLow", "STRdB", "FrOverBr", "FaOverBa", "Phi0"]);
 
-BLOCKS_PER_FILE = 10;
-LOW_PERCENTILE = 0.99;
-HIGH_PERCENTILE = 99.9;
-ROI_SIZE = 600;
-ENERGY_BUFFER = 64;
+BLOCKS_PER_FILE = 10;     % 每条rstart轨迹均匀抽取的连续序列数量
+LOW_PERCENTILE = 0.99;   % Robust min-max下限：0.99百分位
+HIGH_PERCENTILE = 99.9;  % Robust min-max上限：99.9百分位
+ROI_SIZE = 600;          % 分位数必须在600×600原始幅度ROI上统计
+ENERGY_BUFFER = 64;      % 每个H/L边界两侧用于估计功率的RC列数
 
 %% ========================== 仓库与公共配置 ===============================
+% 脚本位置同时作为FS60参数文件和结果目录的基准路径。
 SCRIPT_PATH = string(mfilename('fullpath'));
 REPO_ROOT = string(fileparts(SCRIPT_PATH));
 addpath(REPO_ROOT);
 
+% cfg只保存本脚本实际使用的生产配置，不依赖任何外部配置函数。
 cfg = struct();
 cfg.data_root = "G:\MATLAB-G\SAR Full PSF";
 cfg.dataset_names = [ ...
@@ -40,18 +43,20 @@ cfg.dataset_names = [ ...
     "SAR_Dataset_city2_histeq", "SAR_Dataset_SAR_figure", ...
     "SAR_Dataset_filed", "SAR_Dataset_port", "SAR_Dataset_suburb"];
 cfg.parameter_file_60 = fullfile(REPO_ROOT, "FS60_params.mat");
-cfg.nyquist_margin = 0.98;
+cfg.nyquist_margin = 0.98; % SFT频率相对理论Nyquist保留2%安全余量
+% 九帧在2224列连续块上以128列滑动；512有效区形成H-L-H结构。
 cfg.sequence = struct( ...
     "n_frames", 9, "step", 128, ...
     "signal_height", 1200, "signal_width", 1200, ...
     "patch_size", 512, "roi_size", 600, ...
     "valid_margin", 344, "logic_length", 1536, ...
     "block_width", 2224);
-S60 = load(cfg.parameter_file_60);
+S60 = load(cfg.parameter_file_60); % 60MHz距离-多普勒成像参数
 OUTPUT_ROOT = fullfile(REPO_ROOT, ...
     "results_range_2dsft_scene_percentiles");
-WORK_ROOT = fullfile(OUTPUT_ROOT, "_work");
+WORK_ROOT = fullfile(OUTPUT_ROOT, "_work"); % 分位数chunk和checkpoint临时目录
 
+% protocol记录所有会影响统计结果的公共规则；manifest固定数据来源。
 protocol = build_protocol(cfg, S60, BLOCKS_PER_FILE, ...
     LOW_PERCENTILE, HIGH_PERCENTILE, ROI_SIZE, ENERGY_BUFFER);
 validate_parameters(PARAMETERS, cfg, S60, protocol);
@@ -72,29 +77,31 @@ scenes = unique(string(manifest.Scene), 'stable');
 
 %% ========================== 场景与参数循环 ===============================
 for scene_idx = 1:numel(scenes)
-    scene = scenes(scene_idx);
+    scene = scenes(scene_idx); % 当前场景全名，例如SAR_Dataset_port
     scene_manifest = manifest(string(manifest.Scene) == scene, :);
-    scene_key = string(scene_manifest.SceneKey(1));
+    scene_key = string(scene_manifest.SceneKey(1)); % 稳定、可读的MAT文件名
     output_path = fullfile(OUTPUT_ROOT, scene_key + ".mat");
+    % header用于确认已有MAT与本次场景、清单和统计协议完全一致。
     header = struct( ...
         "schema_version", "range_2dsft_scene_percentiles_v2", ...
         "scene_name", scene, ...
         "scene_key", scene_key, ...
         "protocol", protocol, ...
         "source_manifest", scene_manifest);
-    gt_stats = load_existing_gt(output_path, header);
+    gt_stats = load_existing_gt(output_path, header); % GT与SFT参数无关，场景内共享
 
     fprintf('\n[%d/%d] 场景%s：%d个文件，%d条序列。\n', ...
         scene_idx, numel(scenes), scene, ...
         numel(unique(scene_manifest.FilePath)), height(scene_manifest));
 
     for parameter_idx = 1:height(PARAMETERS)
-        parameter_row = PARAMETERS(parameter_idx, :);
+        parameter_row = PARAMETERS(parameter_idx, :); % 当前倍率和SFT参数行
         parameters = parameter_struct(parameter_row);
-        parameter_key = parameter_keys(parameter_idx);
+        parameter_key = parameter_keys(parameter_idx); % MAT条目的唯一可读键
         pair = make_range_sft_pair(parameters);
+        % 有效倍率由round(q*N)后的真实尺寸决定，并用于Nyquist检查。
         [grid_h, grid_l] = resolve_pair_grids(pair, cfg, S60);
-        need_gt = isempty(fieldnames(gt_stats));
+        need_gt = isempty(fieldnames(gt_stats)); % 仅场景首个参数需要同步计算GT
         work_directory = fullfile(WORK_ROOT, scene_key, parameter_key);
 
         fprintf('  [%d/%d] %s\n', ...
@@ -111,6 +118,7 @@ for scene_idx = 1:numel(scenes)
             gt_stats = result.gt_stats;
         end
 
+        % 一个entry对应一套完整Range+2D-SFT参数及其JointHL输入分位数。
         entry = struct( ...
             "parameter_key", parameter_key, ...
             "parameters", parameters, ...
@@ -131,6 +139,9 @@ fprintf('\n全部场景和参数统计完成：%s\n', OUTPUT_ROOT);
 %% ============================== 本地函数 =================================
 function protocol = build_protocol(cfg, S60, blocks_per_file, ...
         low_percentile, high_percentile, roi_size, energy_buffer)
+%BUILD_PROTOCOL 汇总会改变分位数结果的公共统计协议。
+% 输入：场景/序列配置、60MHz成像参数、抽样数、分位点、ROI和边界宽度。
+% 输出：写入场景MAT和checkpoint的protocol结构，用于显式一致性检查。
 protocol = struct( ...
     "method", "Range_2D_SFT", ...
     "working_echo", "60MHz_from_180MHz_stride3", ...
@@ -149,6 +160,9 @@ protocol = struct( ...
 end
 
 function validate_parameters(parameters, cfg, S60, protocol)
+%VALIDATE_PARAMETERS 检查参数表、归一化范围和SFT物理合法性。
+% parameters每行必须完整描述一组H/L倍率及共享2D-SFT参数。
+% 本函数不修改参数；任何超Nyquist或重复配置都直接报错。
 expected = ["QHigh", "QLow", "STRdB", ...
     "FrOverBr", "FaOverBa", "Phi0"];
 if ~isequal(string(parameters.Properties.VariableNames), expected)
@@ -195,6 +209,8 @@ end
 end
 
 function keys = build_parameter_keys(parameters, protocol)
+%BUILD_PARAMETER_KEYS 为参数表逐行生成稳定、可读且不冲突的文件键。
+% 键中包含倍率、SFT参数和归一化协议，防止统计量被错误复用。
 keys = strings(height(parameters), 1);
 for idx = 1:height(parameters)
     keys(idx) = make_parameter_key( ...
@@ -203,6 +219,8 @@ end
 end
 
 function parameters = parameter_struct(row)
+%PARAMETER_STRUCT 将单行table转换为便于函数传递的标量结构。
+% 输出字段保留物理名称和double类型，避免table标量类型扩散。
 parameters = struct( ...
     "Method", "Range_2D_SFT", ...
     "QHigh", double(row.QHigh), ...
@@ -214,6 +232,8 @@ parameters = struct( ...
 end
 
 function pair = make_range_sft_pair(parameters)
+%MAKE_RANGE_SFT_PAIR 构造共享阈值参数的H/L距离向采集配置。
+% H和L只有q_total不同；STR、fr/Br、fa/Ba、phi0完全相同。
 threshold = struct( ...
     "STR_dB", parameters.STRdB, ...
     "fr_over_Br", parameters.FrOverBr, ...
@@ -229,6 +249,8 @@ pair.L.q_total = parameters.QLow;
 end
 
 function [grid_h, grid_l] = resolve_pair_grids(pair, cfg, S60)
+%RESOLVE_PAIR_GRIDS 计算H/L实际整数网格并检查共同Nyquist上限。
+% 输出grid_h/grid_l记录有效倍率、上采样尺寸、Fs和PRF，供审计保存。
 input_size = [cfg.sequence.signal_height, cfg.sequence.block_width];
 grid_h = resolve_range_grid(pair.H.q_total, input_size, S60);
 grid_l = resolve_range_grid(pair.L.q_total, input_size, S60);
@@ -247,6 +269,8 @@ end
 end
 
 function bandwidth = resolve_azimuth_bandwidth(S60)
+%RESOLVE_AZIMUTH_BANDWIDTH 从FS60参数中解析方位带宽Ba。
+% 优先使用Ba，其次兼容Bd；若只有天线孔径Da则按2v/Da换算。
 if isfield(S60, "Ba")
     bandwidth = S60.Ba;
 elseif isfield(S60, "Bd")
@@ -260,13 +284,15 @@ end
 end
 
 function grid = resolve_range_grid(q_range, input_size, S60)
-% 小数倍率先映射到整数尺寸，再由实际尺寸计算有效采样率。
+%RESOLVE_RANGE_GRID 将名义距离倍率映射为可执行的整数采样网格。
+% 输入q_range为名义倍率，input_size=[距离点数, 方位点数]。
+% 小数倍率使用round(q*N)；输出中的q_range_eff才是实际成像倍率。
 if q_range < 1 || ~isfinite(q_range)
     error('scenePercentiles:InvalidSamplingFactor', ...
         '距离向采样倍率必须是不小于1的有限数。');
 end
-nr_up = round(q_range * input_size(1));
-q_range_eff = nr_up / input_size(1);
+nr_up = round(q_range * input_size(1)); % FFT补零后的整数距离维尺寸
+q_range_eff = nr_up / input_size(1);    % 由整数尺寸反算的有效倍率
 grid = struct( ...
     "q_range", q_range, ...
     "q_azimuth", 1, ...
@@ -280,13 +306,17 @@ grid = struct( ...
 end
 
 function RC_base = generate_range_2dsft_rc(signal, S60, acquisition)
-% 距离向FFT带限上采样、2D-SFT阈值、1-bit量化和距离压缩。
+%GENERATE_RANGE_2DSFT_RC 生成一条采集分支的60MHz基网格RC。
+% signal：1200×2224的60MHz复回波；acquisition：倍率和2D-SFT参数。
+% 流程：距离FFT上采样→2D-SFT阈值→复1-bit量化→RC→中心频谱回投影。
+% 输出RC_base与原始signal同尺寸，保证H/L能够逐列能量对齐和混合。
 grid = resolve_range_grid(acquisition.q_total, size(signal), S60);
-signal_up = upsample_range_fft(signal, grid.upsampled_size(1));
+signal_up = upsample_range_fft(signal, grid.upsampled_size(1)); % 带限插值回波
 threshold = build_2dsft_threshold(signal_up, grid, ...
     acquisition.threshold, S60);
-channel_1bit = quantize_1bit(signal_up, threshold);
+channel_1bit = quantize_1bit(signal_up, threshold); % I/Q各保留一个符号位
 
+% 上采样后必须使用对应Fs_up重建距离快时间轴。
 tnrn_up = 2 * S60.R0 / S60.C + ...
     ((0:size(signal_up, 1)-1).' - floor(size(signal_up, 1) / 2)) ...
     / grid.Fs_up;
@@ -300,7 +330,9 @@ end
 end
 
 function signal_up = upsample_range_fft(signal, target_rows)
-% 在距离频谱中心补零，保持带限插值后的幅度尺度。
+%UPSAMPLE_RANGE_FFT 仅沿距离维进行中心频谱补零带限插值。
+% target_rows是round(q*Nr)后的整数长度；方位维完全不改变。
+% IFFT后乘有效倍率，补偿零填充导致的离散变换幅度变化。
 current_rows = size(signal, 1);
 if target_rows < current_rows
     error('scenePercentiles:UpsampleSize', ...
@@ -309,10 +341,10 @@ elseif target_rows == current_rows
     signal_up = signal;
     return;
 end
-spectrum = fftshift(fft(signal, [], 1), 1);
+spectrum = fftshift(fft(signal, [], 1), 1); % 距离频谱，零频移到中心
 pad_total = target_rows - current_rows;
-pad_top = floor(pad_total / 2);
-pad_bottom = pad_total - pad_top;
+pad_top = floor(pad_total / 2);       % 奇数补零时上侧取floor
+pad_bottom = pad_total - pad_top;     % 剩余零点放在下侧
 spectrum_up = [ ...
     zeros(pad_top, size(signal, 2), 'like', spectrum); ...
     spectrum; ...
@@ -322,24 +354,28 @@ signal_up = ifft(ifftshift(spectrum_up, 1), [], 1) ...
 end
 
 function threshold = build_2dsft_threshold(signal_up, grid, parameters, S60)
-% 二维单频阈值：距离与方位相位相加后取复指数。
-sigma_hat = sqrt(2 / pi) * mean(abs(signal_up(:)));
-amplitude = sigma_hat / (10 ^ (parameters.STR_dB / 20));
-fr_hz = parameters.fr_over_Br * S60.B;
-fa_hz = parameters.fa_over_Ba * resolve_azimuth_bandwidth(S60);
+%BUILD_2DSFT_THRESHOLD 在上采样网格上构造确定性的二维单频复阈值。
+% fast-time对应距离维，slow-time对应方位维；二者相位相加后取复指数。
+% STR定义为信号尺度与阈值幅度之比，H/L共享归一化频率和初相位。
+sigma_hat = sqrt(2 / pi) * mean(abs(signal_up(:))); % 当前分支信号尺度估计
+amplitude = sigma_hat / (10 ^ (parameters.STR_dB / 20)); % 阈值复幅度
+fr_hz = parameters.fr_over_Br * S60.B; % 距离归一化频率转物理Hz
+fa_hz = parameters.fa_over_Ba * resolve_azimuth_bandwidth(S60); % 方位Hz
 
+% block_global时间原点：每个2224列连续块共用同一方位坐标。
 fast_time = ((0:size(signal_up, 1)-1).' ...
     - floor(size(signal_up, 1) / 2)) / grid.Fs_up;
 slow_time = ((0:size(signal_up, 2)-1) ...
     - floor(size(signal_up, 2) / 2)) / grid.PRF_up;
-phase_range = 2 * pi * fr_hz * fast_time;
-phase_azimuth = 2 * pi * fa_hz * slow_time;
+phase_range = 2 * pi * fr_hz * fast_time;   % Nr_up×1距离相位
+phase_azimuth = 2 * pi * fa_hz * slow_time; % 1×Na方位相位
 threshold = amplitude * exp(1i * ...
     (phase_range + phase_azimuth + parameters.phi0));
 end
 
 function output = quantize_1bit(signal, threshold)
-% 对复回波实部和虚部分别执行带阈值的符号量化。
+%QUANTIZE_1BIT 对复回波I/Q分别执行“信号+阈值”的符号判决。
+% 输出字母表固定为实部±1、虚部±1；零值按+1处理。
 if ~isequal(size(signal), size(threshold))
     error('scenePercentiles:ThresholdSize', ...
         '回波和2D-SFT阈值尺寸不一致。');
@@ -352,7 +388,8 @@ output = complex(real_part, imag_part);
 end
 
 function output = crop_range_spectrum(input, target_rows)
-% 距离压缩后裁剪中心频谱，返回FS60基网格。
+%CROP_RANGE_SPECTRUM 将上采样RC投影回原始60MHz距离网格。
+% 只裁距离中心频谱，不改变方位维；偶数和奇数目标尺寸分别处理。
 current_rows = size(input, 1);
 if target_rows > current_rows
     error('scenePercentiles:CropSize', ...
@@ -361,9 +398,9 @@ elseif target_rows == current_rows
     output = input;
     return;
 end
-spectrum = fftshift(fft(input, [], 1), 1);
-center = floor(current_rows / 2) + 1;
-half_width = floor(target_rows / 2);
+spectrum = fftshift(fft(input, [], 1), 1); % 上采样RC的距离频谱
+center = floor(current_rows / 2) + 1;      % fftshift后的中心索引
+half_width = floor(target_rows / 2);       % 目标频谱半宽
 if mod(target_rows, 2) == 0
     indices = center-half_width:center+half_width-1;
 else
@@ -374,7 +411,9 @@ output = ifft(ifftshift(spectrum, 1), [], 1);
 end
 
 function mask = build_hlh_mask(sequence)
-% 有效区固定为H(512)-L(512)-H(512)，两端扩展344列成完整RC掩膜。
+%BUILD_HLH_MASK 构造2224列连续RC上的H-L-H空间选择掩膜。
+% 有效逻辑区为H(512)-L(512)-H(512)，两端各扩展344列。
+% true选择对齐后的RC_H，false选择RC_L；边界应固定为两个。
 logic_mask = false(1, sequence.logic_length);
 logic_mask(1:512) = true;
 logic_mask(1025:1536) = true;
@@ -391,7 +430,9 @@ mask = struct("logic", logic_mask, "full", full_mask, ...
 end
 
 function signal60 = load_echo_block(manifest_row, S60, block_width)
-% 从180MHz轨迹裁出连续块，再按1:3抽取为60MHz复回波。
+%LOAD_ECHO_BLOCK 读取清单指定的180MHz轨迹连续块并转换为60MHz。
+% manifest_row提供文件、变量名和CStart；persistent缓存避免重复读同一轨迹。
+% 输出固定为S60.nrn×block_width复回波，供H/L两分支共同使用。
 persistent cached_path cached_raw
 file_path = string(manifest_row.FilePath(1));
 if isempty(cached_path) || cached_path ~= file_path
@@ -404,8 +445,8 @@ if isempty(cached_path) || cached_path ~= file_path
     cached_raw = loaded.(variable_name);
     cached_path = file_path;
 end
-start_index = manifest_row.CStart(1);
-stop_index = start_index + block_width - 1;
+start_index = manifest_row.CStart(1);          % 当前2224列块的首列
+stop_index = start_index + block_width - 1;   % 当前块的末列
 if stop_index > size(cached_raw, 2)
     error('scenePercentiles:EchoBlockRange', ...
         '轨迹%s无法裁出指定连续块。', file_path);
@@ -419,7 +460,9 @@ signal60 = signal60(1:S60.nrn, :);
 end
 
 function [RC_mix, info] = align_and_mix_rc(RC_H, RC_L, mode_mask, buffer)
-% 汇总两个边界的局部功率，用一个gamma将完整H分支对齐到L分支。
+%ALIGN_AND_MIX_RC 用双边界单一gamma完成H/L能量对齐和空间拼接。
+% RC_H/RC_L必须位于同一60MHz基网格；mode_mask=true的位置选择H。
+% 输出RC_mix用于流程审计，info中的scale_factor用于纯H统计量对齐。
 if ~isequal(size(RC_H), size(RC_L))
     error('scenePercentiles:RCSizeMismatch', 'H/L RC尺寸不一致。');
 end
@@ -428,14 +471,14 @@ if numel(mode_mask) ~= size(RC_H, 2)
     error('scenePercentiles:RCMaskLength', ...
         'H-L-H掩膜长度必须等于RC列数。');
 end
-boundaries = find(diff(mode_mask) ~= 0);
+boundaries = find(diff(mode_mask) ~= 0); % H→L和L→H两个空间边界
 if numel(boundaries) ~= 2
     error('scenePercentiles:RCBoundaryCount', ...
         'H-L-H连续块必须包含两个边界。');
 end
 
-power_h = zeros(numel(boundaries), 1);
-power_l = zeros(numel(boundaries), 1);
+power_h = zeros(numel(boundaries), 1); % 每个边界H侧的平均RC功率
+power_l = zeros(numel(boundaries), 1); % 每个边界L侧的平均RC功率
 for idx = 1:numel(boundaries)
     boundary = boundaries(idx);
     left = max(1, boundary-buffer+1):boundary;
@@ -450,11 +493,12 @@ for idx = 1:numel(boundaries)
     power_h(idx) = mean(abs(RC_H(:, h_indices)).^2, 'all');
     power_l(idx) = mean(abs(RC_L(:, l_indices)).^2, 'all');
 end
-pooled_h = mean(power_h);
-pooled_l = mean(power_l);
+pooled_h = mean(power_h); % 两个边界等权汇总后的H功率
+pooled_l = mean(power_l); % 两个边界等权汇总后的L功率
 if pooled_h <= 1e-12
     scale_factor = 1;
 else
+    % gamma=sqrt(P_L/P_H)，使缩放后H功率与L处于同一强度尺度。
     scale_factor = sqrt((pooled_l + eps) / (pooled_h + eps));
 end
 RC_H_aligned = RC_H * scale_factor;
@@ -471,7 +515,9 @@ info = struct( ...
 end
 
 function image_roi = focus_base_rc(RC_base, S60, roi_size)
-% 使用允许调用的RCMC和SAR_Imaging完成成像并提取中心幅度ROI。
+%FOCUS_BASE_RC 从60MHz基网格RC生成指定尺寸的线性幅度ROI。
+% 仅调用允许的RCMC和SAR_Imaging；不做归一化、对数显示或均衡化。
+% 输出image_roi为实数非负幅度图，是JointHL分位数的直接像素来源。
 if ~isequal(size(RC_base), [S60.nrn, S60.nan])
     error('scenePercentiles:FocusRCSize', ...
         '成像RC必须位于FS60基网格。');
@@ -484,19 +530,22 @@ row_start = S60.nrn / 2 - S60.R_total / 2 + 1;
 row_end = S60.nrn / 2 + S60.R_total / 2;
 column_start = S60.nan / 2 - S60.A_num / 2;
 column_end = S60.nan / 2 + S60.A_num / 2 - 1;
-full_roi = abs(image_complex(row_start:row_end, ...
+full_roi = abs(image_complex(row_start:row_end, ... % 标准600×600有效幅度区
     column_start:column_end));
 image_roi = crop_center(full_roi, roi_size);
 end
 
 function image_roi = generate_gt_image(signal, S60, roi_size)
-% 未量化60MHz复回波的标准成像结果，作为GT分位数像素来源。
+%GENERATE_GT_IMAGE 对未量化60MHz复回波执行标准成像。
+% GT只依赖原始回波和成像参数，与H/L倍率及2D-SFT参数无关。
 RC_gt = Range_Compress(signal, S60.fc, S60.tnrn, S60.gama, ...
     S60.R0, S60.C, S60.Fs, S60.Tp);
 image_roi = focus_base_rc(RC_gt, S60, roi_size);
 end
 
 function output = crop_center(input, target_size)
+%CROP_CENTER 从二维图像中心裁出target_size×target_size区域。
+% 分位数脚本传入600时通常保持原ROI；函数保留尺寸检查以防协议变化。
 row_start = floor((size(input, 1) - target_size) / 2) + 1;
 column_start = floor((size(input, 2) - target_size) / 2) + 1;
 if row_start < 1 || column_start < 1
@@ -509,6 +558,11 @@ end
 
 function result = process_scene_parameter(cfg, S60, scene_manifest, ...
         pair, parameters, protocol, work_directory, need_gt)
+%PROCESS_SCENE_PARAMETER 计算一个场景、一组参数的JointHL分位数。
+% scene_manifest包含该场景全部均匀抽样序列；pair定义H/L采集分支。
+% need_gt=true时在同一遍历中同步收集GT像素，避免额外读取和成像。
+% 输出result包含JointHL输入统计、可选GT统计和能量对齐审计量。
+% 大像素池按序列写入chunk，避免将整个场景一次性保存在内存中。
 joint_directory = fullfile(work_directory, "joint");
 gt_directory = fullfile(work_directory, "gt");
 checkpoint_path = fullfile(work_directory, "checkpoint.mat");
@@ -517,6 +571,7 @@ if need_gt
     ensure_directory(gt_directory);
 end
 
+% checkpoint_config保存显式配置和完整清单，不使用哈希或摘要。
 checkpoint_config = struct( ...
     "version", "range_2dsft_scene_percentiles_checkpoint_v2", ...
     "scene", string(scene_manifest.Scene(1)), ...
@@ -524,7 +579,8 @@ checkpoint_config = struct( ...
     "parameters", parameters, ...
     "protocol", protocol, ...
     "include_gt", need_gt);
-sequence_count = height(scene_manifest);
+sequence_count = height(scene_manifest); % 当前场景参与统计的连续序列数
+% 每条序列完成后记录gamma和边界残差，便于恢复及最终审计。
 initial_state = struct( ...
     "config", checkpoint_config, ...
     "completed_sequences", 0, ...
@@ -534,8 +590,8 @@ state = load_checkpoint(checkpoint_path, checkpoint_config, initial_state);
 verify_completed_chunks( ...
     state.completed_sequences, joint_directory, gt_directory, need_gt);
 
-frame_count = cfg.sequence.n_frames;
-pixels_per_image = protocol.roi_size ^ 2;
+frame_count = cfg.sequence.n_frames;       % 固定九帧
+pixels_per_image = protocol.roi_size ^ 2; % 单张600×600 ROI的像素数
 mask = build_hlh_mask(cfg.sequence);
 for sequence_idx = state.completed_sequences + 1:sequence_count
     signal = load_echo_block( ...
@@ -547,23 +603,28 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
             scene_manifest.SequenceID(sequence_idx));
     end
 
+    % 同一连续回波分别生成H/L完整RC；二者共享SFT物理参数。
     RC_H = generate_range_2dsft_rc(signal, S60, pair.H);
     RC_L = generate_range_2dsft_rc(signal, S60, pair.L);
     [~, mix_info] = align_and_mix_rc( ...
         RC_H, RC_L, mask.full, protocol.energy_buffer);
+    % JointHL中的纯H图必须与实际RC_mix里的H区域使用同一个gamma。
     RC_H = RC_H * mix_info.scale_factor;
 
+    % 每帧贡献一张H和一张L，因此JointHL像素数严格为GT的两倍。
     joint_values = zeros(2 * pixels_per_image * frame_count, 1, 'single');
     if need_gt
         gt_values = zeros(pixels_per_image * frame_count, 1, 'single');
     end
     for frame_idx = 1:frame_count
+        % 九个1200列成像窗口沿2224列连续块每次移动128列。
         columns = frame_columns(cfg.sequence, frame_idx);
         h_image = focus_base_rc( ...
             RC_H(:, columns), S60, protocol.roi_size);
         l_image = focus_base_rc( ...
             RC_L(:, columns), S60, protocol.roi_size);
-        frame_pool = make_joint_hl_pool(h_image, l_image);
+        frame_pool = make_joint_hl_pool(h_image, l_image); % H/L等像素权重
+        % 将当前帧的2×600×600像素写入预分配列向量对应区间。
         joint_start = (frame_idx - 1) * 2 * pixels_per_image + 1;
         joint_stop = frame_idx * 2 * pixels_per_image;
         joint_values(joint_start:joint_stop) = frame_pool;
@@ -577,6 +638,7 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
         end
     end
 
+    % chunk编号与场景清单行一一对应，保证断点恢复顺序确定。
     chunk_name = sprintf('chunk_%06d.mat', sequence_idx);
     atomic_save(fullfile(joint_directory, chunk_name), ...
         struct("values", joint_values));
@@ -584,6 +646,7 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
         atomic_save(fullfile(gt_directory, chunk_name), ...
             struct("values", gt_values));
     end
+    % 先完整写出像素chunk，再更新checkpoint，避免声明完成但文件缺失。
     state.completed_sequences = sequence_idx;
     state.scale_factors(sequence_idx) = mix_info.scale_factor;
     state.boundary_jump_db(sequence_idx) = mix_info.boundary_jump_db;
@@ -591,6 +654,7 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
     fprintf('    序列 %d/%d 完成。\n', sequence_idx, sequence_count);
 end
 
+% 所有序列完成后，跨全部chunk计算场景级精确分位数。
 percentages = [protocol.low_percentile, protocol.high_percentile];
 input_stats = calculate_chunk_percentiles( ...
     joint_directory, percentages, "JointHL", ...
@@ -603,6 +667,7 @@ else
     gt_stats = struct();
 end
 
+% audit不参与归一化，只用于检查gamma范围和RC边界是否仍接近0 dB。
 audit = struct( ...
     "SequenceCount", sequence_count, ...
     "FileCount", numel(unique(scene_manifest.FilePath)), ...
@@ -622,11 +687,15 @@ result = struct("input_stats", input_stats, ...
 end
 
 function columns = frame_columns(sequence_cfg, frame_idx)
+%FRAME_COLUMNS 返回第frame_idx帧在2224列连续块中的1200列索引。
+% frame_idx使用MATLAB的1~9编号；首列按128步长线性移动。
 start_idx = 1 + (frame_idx - 1) * sequence_cfg.step;
 columns = start_idx:start_idx + sequence_cfg.signal_width - 1;
 end
 
 function verify_completed_chunks(completed, joint_dir, gt_dir, need_gt)
+%VERIFY_COMPLETED_CHUNKS 核对checkpoint声称完成的磁盘像素块。
+% JointHL chunk必须存在；need_gt=true时对应GT chunk也必须存在。
 for idx = 1:completed
     name = sprintf('chunk_%06d.mat', idx);
     if ~isfile(fullfile(joint_dir, name)) || ...
@@ -638,6 +707,9 @@ end
 end
 
 function gt_stats = load_existing_gt(file_path, header)
+%LOAD_EXISTING_GT 从已有场景MAT读取可复用的GT分位数。
+% 复用前直接比较schema、场景身份、完整协议和源清单，不使用哈希。
+% 文件不存在时返回空结构，主流程会在首个参数中计算GT。
 gt_stats = struct();
 if ~isfile(file_path)
     return;
@@ -663,7 +735,8 @@ gt_stats = existing.gt;
 end
 
 function exists = scene_entry_exists(file_path, parameter_key)
-% 已写入场景MAT的参数不重复成像；残留work目录可安全清理。
+%SCENE_ENTRY_EXISTS 判断指定参数的JointHL统计是否已经成功提交。
+% 返回true时主流程跳过重复成像，并清理可能残留的临时目录。
 exists = false;
 if ~isfile(file_path)
     return;
@@ -679,6 +752,8 @@ exists = any(keys == string(parameter_key));
 end
 
 function value = imaging_parameters(S60)
+%IMAGING_PARAMETERS 提取会影响成像和分位数的FS60核心参数。
+% 这些显式字段随protocol保存，用于后续逐字段一致性检查。
 names = ["fc", "B", "Fs", "prf", "R0", "C", "v", ...
     "Tp", "Ta", "nrn", "nan", "R_total", "A_num"];
 value = struct();
@@ -690,9 +765,12 @@ end
 end
 
 function manifest = build_scene_manifest(cfg, blocks_per_file)
-% 枚举场景中的全部rstart文件，并在每个文件内均匀选取连续块。
+%BUILD_SCENE_MANIFEST 枚举全部场景轨迹并建立确定性的统计清单。
+% 每个rstart文件在[1,max_start]内均匀选取blocks_per_file个CStart。
+% 输出manifest逐行记录场景、文件、变量、起点和文件元数据，既用于
+% 主循环读取，也用于已有结果和checkpoint的显式一致性比较。
 manifest = table();
-sequence_id = 0;
+sequence_id = 0; % 跨场景递增的唯一序列编号
 for scene_idx = 1:numel(cfg.dataset_names)
     scene = string(cfg.dataset_names(scene_idx));
     scene_directory = fullfile(string(cfg.data_root), scene);
@@ -716,13 +794,14 @@ for scene_idx = 1:numel(cfg.dataset_names)
             error('scenePercentiles:EchoSchema', ...
                 '回波文件缺少二维变量：%s', file_path);
         end
-        raw_width = variables(1).size(2);
-        max_start = raw_width - cfg.sequence.block_width + 1;
+        raw_width = variables(1).size(2); % 180MHz原始回波总列数
+        max_start = raw_width - cfg.sequence.block_width + 1; % 最大合法首列
         if max_start < blocks_per_file
             error('scenePercentiles:EchoTooShort', ...
                 '文件%s无法抽取%d个宽度为%d的不同连续块。', ...
                 file.name, blocks_per_file, cfg.sequence.block_width);
         end
+        % 包含轨迹首尾位置，round后仍要求所有起点互不重复。
         starts = unique(round(linspace(1, max_start, blocks_per_file)), ...
             'stable');
         if numel(starts) ~= blocks_per_file
@@ -757,7 +836,8 @@ end
 end
 
 function files = sort_echo_files(files)
-% 优先按rstart后的数字排序，无法解析的文件再按名称排序。
+%SORT_ECHO_FILES 按rstart后的数字对轨迹文件进行稳定排序。
+% 例如rstart 20.mat排在rstart 100.mat前；无法解析时按名称排序。
 numbers = inf(numel(files), 1);
 for idx = 1:numel(files)
     token = regexp(files(idx).name, ...
@@ -774,7 +854,8 @@ files = files(order.OriginalIndex);
 end
 
 function key = make_scene_key(scene_name)
-% 将已知场景名转换为稳定、可读的输出文件名。
+%MAKE_SCENE_KEY 将场景全名转换为稳定、可读的MAT文件名。
+% 已知七场景使用固定映射，未知名称再执行小写和安全字符清理。
 known_names = ["SAR_Dataset_Bangkok_1", "SAR_Dataset_city1_histeq", ...
     "SAR_Dataset_city2_histeq", "SAR_Dataset_SAR_figure", ...
     "SAR_Dataset_filed", "SAR_Dataset_port", "SAR_Dataset_suburb"];
@@ -794,7 +875,9 @@ end
 end
 
 function values = make_joint_hl_pool(h_image, l_image)
-% H已完成能量对齐；同尺寸连接确保H/L在统计中具有相同像素权重。
+%MAKE_JOINT_HL_POOL 将一张纯H和一张纯L幅度图等权连接。
+% h_image必须已经乘过当前序列的gamma；这里不做像素融合或加权平均。
+% 输出顺序为[H(:);L(:)]，相同尺寸天然保证H/L像素权重各占50%。
 if ~isequal(size(h_image), size(l_image)) || ...
         ~isreal(h_image) || ~isreal(l_image)
     error('scenePercentiles:JointHLImageMismatch', ...
@@ -805,7 +888,9 @@ end
 
 function stats = calculate_chunk_percentiles( ...
         chunk_directory, percentages, modality, image_count)
-% 从磁盘分块建立tall列向量，避免一次把全场景像素载入内存。
+%CALCULATE_CHUNK_PERCENTILES 计算跨全部磁盘chunk的场景级分位数。
+% percentages=[低分位,高分位]，modality用于结果标识，image_count用于审计。
+% fileDatastore+tall避免一次载入数十亿像素；Method=midpoint固定插值规则。
 files = dir(fullfile(chunk_directory, "chunk_*.mat"));
 [~, order] = sort(lower(string({files.name})));
 files = files(order);
@@ -814,8 +899,8 @@ if isempty(files)
         '没有找到分位数数据块：%s', chunk_directory);
 end
 
-paths = strings(numel(files), 1);
-pixel_count = 0;
+paths = strings(numel(files), 1); % 按chunk编号排序后的完整路径
+pixel_count = 0;                  % 所有chunk实际像素总数
 for idx = 1:numel(files)
     paths(idx) = string(fullfile(files(idx).folder, files(idx).name));
     variables = whos('-file', paths(idx));
@@ -833,6 +918,7 @@ for idx = 1:numel(files)
     pixel_count = pixel_count + prod(variable.size);
 end
 
+% 每次只读取一个single列向量，tall在本地会话中顺序汇总。
 datastore_value = fileDatastore(paths, ...
     'ReadFcn', @read_chunk_values, 'UniformRead', true);
 mapreducer(0); % 使用本地MATLAB会话，不依赖并行许可证。
@@ -852,6 +938,8 @@ stats = struct("Modality", modality, "VMin", limits(1), ...
 end
 
 function values = read_chunk_values(file_path)
+%READ_CHUNK_VALUES fileDatastore的单文件读取函数。
+% 每个chunk只允许包含一个名为values的列向量。
 loaded = load(file_path, 'values');
 if ~isfield(loaded, 'values')
     error('scenePercentiles:ChunkSchema', ...
@@ -861,7 +949,8 @@ values = loaded.values(:);
 end
 
 function key = make_parameter_key(parameters, protocol)
-% 参数、相位和归一化协议全部进入键，避免误用不匹配的统计量。
+%MAKE_PARAMETER_KEY 构造一套统计结果的稳定ASCII条目键。
+% 倍率、STR、fr、fa、phi0、分位点、ROI和buffer全部进入键，避免误用。
 key = "range_2d_sft" + ...
     "_qh" + encode_number(parameters.QHigh) + ...
     "_ql" + encode_number(parameters.QLow) + ...
@@ -876,6 +965,8 @@ key = "range_2d_sft" + ...
 end
 
 function value = encode_number(number)
+%ENCODE_NUMBER 将数值转换为适合文件键的ASCII片段。
+% 负号编码为m，小数点编码为p，避免不同平台文件名歧义。
 value = replace(string(sprintf('%.12g', double(number))), "-", "m");
 value = replace(value, ".", "p");
 value = replace(value, "+", "");
@@ -883,8 +974,10 @@ end
 
 function scene_stats = upsert_scene_stats( ...
         file_path, header, gt_stats, entry)
-% 一个场景MAT保存共享GT统计及多组Range+2D-SFT输入统计。
-now_text = string(datetime('now', ...
+%UPSERT_SCENE_STATS 原子新增或替换场景MAT中的一组参数统计。
+% 一个MAT保存场景共享GT以及多组Range+2D-SFT JointHL输入分位数。
+% parameter_key唯一匹配；重复运行同一参数时保留created_at并更新时间。
+now_text = string(datetime('now', ... % 当前结果写入时间，使用带时区ISO格式
     'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX'));
 if isfile(file_path)
     loaded = load(file_path, 'scene_stats');
@@ -902,7 +995,7 @@ else
 end
 
 entry.updated_at = now_text;
-keys = strings(0, 1);
+keys = strings(0, 1); % 已有entries的parameter_key列表
 if ~isempty(scene_stats.entries)
     keys = string({scene_stats.entries.parameter_key}).';
 end
@@ -926,6 +1019,8 @@ atomic_save(file_path, struct("scene_stats", scene_stats));
 end
 
 function verify_scene_header(scene_stats, header, file_path)
+%VERIFY_SCENE_HEADER 防止新统计写入不兼容的已有场景MAT。
+% 直接逐字段比较场景身份、统计协议和完整源清单，不计算哈希。
 required = ["schema_version", "scene_name", "scene_key", ...
     "protocol", "source_manifest", "gt", "entries", "created_at"];
 if ~all(isfield(scene_stats, required)) || ...
@@ -940,6 +1035,8 @@ end
 end
 
 function output = append_table(input, row)
+%APPEND_TABLE 将单行table安全追加到table累加器。
+% 空累加器必须初始化为table()，避免table与double空数组混合拼接。
 if isempty(input)
     output = row;
 else
@@ -948,6 +1045,7 @@ end
 end
 
 function ensure_directory(path)
+%ENSURE_DIRECTORY 确保输出或临时目录存在；创建失败立即报错。
 if ~isfolder(path)
     [ok, message] = mkdir(path);
     if ~ok
@@ -958,7 +1056,9 @@ end
 end
 
 function state = load_checkpoint(file_path, checkpoint_config, initial_state)
+%LOAD_CHECKPOINT 恢复长时间统计的序列级进度。
 % 不计算哈希；直接保存并逐字段比较完整配置和场景清单。
+% 文件不存在时返回initial_state，配置不一致时拒绝静默复用。
 state = initial_state;
 if ~isfile(file_path)
     return;
@@ -976,12 +1076,13 @@ state = loaded.state;
 end
 
 function atomic_save(file_path, payload)
-% 先写临时MAT，再替换目标文件，避免中断留下半写文件。
+%ATOMIC_SAVE 先写临时MAT，再替换目标文件。
+% payload为待保存结构；先完整写入.tmp可避免中断留下半写结果。
 output_directory = string(fileparts(file_path));
 if strlength(output_directory) > 0
     ensure_directory(output_directory);
 end
-temporary_path = string(file_path) + ".tmp";
+temporary_path = string(file_path) + ".tmp"; % 与目标文件同目录，便于原子替换
 save(temporary_path, '-struct', 'payload', '-v7.3');
 [ok, message] = movefile(temporary_path, file_path, 'f');
 if ~ok
@@ -991,6 +1092,7 @@ end
 end
 
 function print_scene_counts(manifest)
+%PRINT_SCENE_COUNTS 在正式计算前打印每个场景的文件数和序列数。
 scenes = unique(string(manifest.Scene), 'stable');
 for idx = 1:numel(scenes)
     rows = manifest(string(manifest.Scene) == scenes(idx), :);
@@ -1000,6 +1102,9 @@ end
 end
 
 function remove_completed_work_directory(work_directory, work_root)
+%REMOVE_COMPLETED_WORK_DIRECTORY 删除已提交结果对应的临时chunk目录。
+% 删除前解析规范绝对路径，并强制要求目标位于_work根目录内部。
+% 最终场景MAT已原子写入，因此这里只清理可再生的临时文件。
 if ~isfolder(work_directory)
     return;
 end
