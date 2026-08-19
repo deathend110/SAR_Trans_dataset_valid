@@ -33,7 +33,20 @@ SCRIPT_PATH = string(mfilename('fullpath'));
 REPO_ROOT = string(fileparts(SCRIPT_PATH));
 addpath(REPO_ROOT);
 
-cfg = sarvalid.default_config();
+cfg = struct();
+cfg.data_root = "G:\MATLAB-G\SAR Full PSF";
+cfg.dataset_names = [ ...
+    "SAR_Dataset_Bangkok_1", "SAR_Dataset_city1_histeq", ...
+    "SAR_Dataset_city2_histeq", "SAR_Dataset_SAR_figure", ...
+    "SAR_Dataset_filed", "SAR_Dataset_port", "SAR_Dataset_suburb"];
+cfg.parameter_file_60 = fullfile(REPO_ROOT, "FS60_params.mat");
+cfg.nyquist_margin = 0.98;
+cfg.sequence = struct( ...
+    "n_frames", 9, "step", 128, ...
+    "signal_height", 1200, "signal_width", 1200, ...
+    "patch_size", 512, "roi_size", 600, ...
+    "valid_margin", 344, "logic_length", 1536, ...
+    "block_width", 2224);
 S60 = load(cfg.parameter_file_60);
 OUTPUT_ROOT = fullfile(REPO_ROOT, ...
     "results_range_2dsft_scene_percentiles");
@@ -53,8 +66,8 @@ for parameter_idx = 1:height(PARAMETERS)
 end
 print_scene_counts(manifest);
 
-sarvalid.ensure_dir(OUTPUT_ROOT);
-sarvalid.ensure_dir(WORK_ROOT);
+ensure_directory(OUTPUT_ROOT);
+ensure_directory(WORK_ROOT);
 scenes = unique(string(manifest.Scene), 'stable');
 
 %% ========================== 场景与参数循环 ===============================
@@ -63,16 +76,13 @@ for scene_idx = 1:numel(scenes)
     scene_manifest = manifest(string(manifest.Scene) == scene, :);
     scene_key = string(scene_manifest.SceneKey(1));
     output_path = fullfile(OUTPUT_ROOT, scene_key + ".mat");
-    source_signature = manifest_signature(scene_manifest);
     header = struct( ...
-        "schema_version", "range_2dsft_scene_percentiles_v1", ...
+        "schema_version", "range_2dsft_scene_percentiles_v2", ...
         "scene_name", scene, ...
         "scene_key", scene_key, ...
         "protocol", protocol, ...
-        "source_manifest", scene_manifest, ...
-        "source_signature", source_signature);
-    gt_signature = make_gt_signature(header);
-    gt_stats = load_existing_gt(output_path, header, gt_signature);
+        "source_manifest", scene_manifest);
+    gt_stats = load_existing_gt(output_path, header);
 
     fprintf('\n[%d/%d] 场景%s：%d个文件，%d条序列。\n', ...
         scene_idx, numel(scenes), scene, ...
@@ -82,17 +92,21 @@ for scene_idx = 1:numel(scenes)
         parameter_row = PARAMETERS(parameter_idx, :);
         parameters = parameter_struct(parameter_row);
         parameter_key = parameter_keys(parameter_idx);
-        pair = make_range_sft_pair(cfg, parameters);
+        pair = make_range_sft_pair(parameters);
         [grid_h, grid_l] = resolve_pair_grids(pair, cfg, S60);
         need_gt = isempty(fieldnames(gt_stats));
         work_directory = fullfile(WORK_ROOT, scene_key, parameter_key);
 
         fprintf('  [%d/%d] %s\n', ...
             parameter_idx, height(PARAMETERS), parameter_key);
+        if scene_entry_exists(output_path, parameter_key)
+            remove_completed_work_directory(work_directory, WORK_ROOT);
+            fprintf('    该参数已有完整统计，跳过。\n');
+            continue;
+        end
         result = process_scene_parameter( ...
             cfg, S60, scene_manifest, pair, parameters, protocol, ...
-            source_signature, gt_signature, work_directory, ...
-            need_gt);
+            work_directory, need_gt);
         if need_gt
             gt_stats = result.gt_stats;
         end
@@ -131,7 +145,7 @@ protocol = struct( ...
     "joint_pool", "equal_pixels_H_aligned_and_L_all_9_frames", ...
     "mixed_pixels_in_pool", false, ...
     "sequence", cfg.sequence, ...
-    "imaging", imaging_signature(S60));
+    "imaging", imaging_parameters(S60));
 end
 
 function validate_parameters(parameters, cfg, S60, protocol)
@@ -170,7 +184,7 @@ end
 keys = strings(height(parameters), 1);
 for idx = 1:height(parameters)
     value = parameter_struct(parameters(idx, :));
-    pair = make_range_sft_pair(cfg, value);
+    pair = make_range_sft_pair(value);
     resolve_pair_grids(pair, cfg, S60);
     keys(idx) = make_parameter_key(value, protocol);
 end
@@ -199,25 +213,29 @@ parameters = struct( ...
     "Phi0", double(row.Phi0));
 end
 
-function pair = make_range_sft_pair(cfg, parameters)
+function pair = make_range_sft_pair(parameters)
 threshold = struct( ...
-    "As", cfg.threshold.As, ...
     "STR_dB", parameters.STRdB, ...
     "fr_over_Br", parameters.FrOverBr, ...
     "fa_over_Ba", parameters.FaOverBa, ...
     "phi0", parameters.Phi0);
-pair = sarvalid.make_pair_config(cfg, "Range_2D_SFT", ...
-    parameters.QHigh, parameters.QLow, 1, threshold);
+base = struct("method", "Range_2D_SFT", ...
+    "threshold", threshold, "time_origin", "block_global");
+pair = struct("method", "Range_2D_SFT", ...
+    "q_high", parameters.QHigh, "q_low", parameters.QLow, ...
+    "H", base, "L", base);
+pair.H.q_total = parameters.QHigh;
+pair.L.q_total = parameters.QLow;
 end
 
 function [grid_h, grid_l] = resolve_pair_grids(pair, cfg, S60)
 input_size = [cfg.sequence.signal_height, cfg.sequence.block_width];
-grid_h = sarvalid.resolve_acquisition(pair.H, input_size, S60);
-grid_l = sarvalid.resolve_acquisition(pair.L, input_size, S60);
+grid_h = resolve_range_grid(pair.H.q_total, input_size, S60);
+grid_l = resolve_range_grid(pair.L.q_total, input_size, S60);
 azimuth_bandwidth = resolve_azimuth_bandwidth(S60);
-fr_limit = cfg.threshold.nyquist_margin * ...
+fr_limit = cfg.nyquist_margin * ...
     min(grid_h.Fs_up, grid_l.Fs_up) / (2 * S60.B);
-fa_limit = cfg.threshold.nyquist_margin * ...
+fa_limit = cfg.nyquist_margin * ...
     min(grid_h.PRF_up, grid_l.PRF_up) / (2 * azimuth_bandwidth);
 fr = pair.H.threshold.fr_over_Br;
 fa = pair.H.threshold.fa_over_Ba;
@@ -241,40 +259,286 @@ else
 end
 end
 
+function grid = resolve_range_grid(q_range, input_size, S60)
+% 小数倍率先映射到整数尺寸，再由实际尺寸计算有效采样率。
+if q_range < 1 || ~isfinite(q_range)
+    error('scenePercentiles:InvalidSamplingFactor', ...
+        '距离向采样倍率必须是不小于1的有限数。');
+end
+nr_up = round(q_range * input_size(1));
+q_range_eff = nr_up / input_size(1);
+grid = struct( ...
+    "q_range", q_range, ...
+    "q_azimuth", 1, ...
+    "q_range_eff", q_range_eff, ...
+    "q_azimuth_eff", 1, ...
+    "q_total_eff", q_range_eff, ...
+    "input_size", input_size, ...
+    "upsampled_size", [nr_up, input_size(2)], ...
+    "Fs_up", q_range_eff * S60.Fs, ...
+    "PRF_up", S60.prf);
+end
+
+function RC_base = generate_range_2dsft_rc(signal, S60, acquisition)
+% 距离向FFT带限上采样、2D-SFT阈值、1-bit量化和距离压缩。
+grid = resolve_range_grid(acquisition.q_total, size(signal), S60);
+signal_up = upsample_range_fft(signal, grid.upsampled_size(1));
+threshold = build_2dsft_threshold(signal_up, grid, ...
+    acquisition.threshold, S60);
+channel_1bit = quantize_1bit(signal_up, threshold);
+
+tnrn_up = 2 * S60.R0 / S60.C + ...
+    ((0:size(signal_up, 1)-1).' - floor(size(signal_up, 1) / 2)) ...
+    / grid.Fs_up;
+RC_up = Range_Compress(channel_1bit, S60.fc, tnrn_up, S60.gama, ...
+    S60.R0, S60.C, grid.Fs_up, S60.Tp);
+RC_base = crop_range_spectrum(RC_up, size(signal, 1));
+if ~isequal(size(RC_base), size(signal))
+    error('scenePercentiles:BaseRCSize', ...
+        '距离压缩结果无法投影回60MHz基网格。');
+end
+end
+
+function signal_up = upsample_range_fft(signal, target_rows)
+% 在距离频谱中心补零，保持带限插值后的幅度尺度。
+current_rows = size(signal, 1);
+if target_rows < current_rows
+    error('scenePercentiles:UpsampleSize', ...
+        '上采样目标行数不能小于输入行数。');
+elseif target_rows == current_rows
+    signal_up = signal;
+    return;
+end
+spectrum = fftshift(fft(signal, [], 1), 1);
+pad_total = target_rows - current_rows;
+pad_top = floor(pad_total / 2);
+pad_bottom = pad_total - pad_top;
+spectrum_up = [ ...
+    zeros(pad_top, size(signal, 2), 'like', spectrum); ...
+    spectrum; ...
+    zeros(pad_bottom, size(signal, 2), 'like', spectrum)];
+signal_up = ifft(ifftshift(spectrum_up, 1), [], 1) ...
+    * (target_rows / current_rows);
+end
+
+function threshold = build_2dsft_threshold(signal_up, grid, parameters, S60)
+% 二维单频阈值：距离与方位相位相加后取复指数。
+sigma_hat = sqrt(2 / pi) * mean(abs(signal_up(:)));
+amplitude = sigma_hat / (10 ^ (parameters.STR_dB / 20));
+fr_hz = parameters.fr_over_Br * S60.B;
+fa_hz = parameters.fa_over_Ba * resolve_azimuth_bandwidth(S60);
+
+fast_time = ((0:size(signal_up, 1)-1).' ...
+    - floor(size(signal_up, 1) / 2)) / grid.Fs_up;
+slow_time = ((0:size(signal_up, 2)-1) ...
+    - floor(size(signal_up, 2) / 2)) / grid.PRF_up;
+phase_range = 2 * pi * fr_hz * fast_time;
+phase_azimuth = 2 * pi * fa_hz * slow_time;
+threshold = amplitude * exp(1i * ...
+    (phase_range + phase_azimuth + parameters.phi0));
+end
+
+function output = quantize_1bit(signal, threshold)
+% 对复回波实部和虚部分别执行带阈值的符号量化。
+if ~isequal(size(signal), size(threshold))
+    error('scenePercentiles:ThresholdSize', ...
+        '回波和2D-SFT阈值尺寸不一致。');
+end
+real_part = ones(size(signal), 'like', real(signal));
+imag_part = ones(size(signal), 'like', real(signal));
+real_part(real(signal) + real(threshold) < 0) = -1;
+imag_part(imag(signal) + imag(threshold) < 0) = -1;
+output = complex(real_part, imag_part);
+end
+
+function output = crop_range_spectrum(input, target_rows)
+% 距离压缩后裁剪中心频谱，返回FS60基网格。
+current_rows = size(input, 1);
+if target_rows > current_rows
+    error('scenePercentiles:CropSize', ...
+        '频谱裁剪目标不能大于当前距离维。');
+elseif target_rows == current_rows
+    output = input;
+    return;
+end
+spectrum = fftshift(fft(input, [], 1), 1);
+center = floor(current_rows / 2) + 1;
+half_width = floor(target_rows / 2);
+if mod(target_rows, 2) == 0
+    indices = center-half_width:center+half_width-1;
+else
+    indices = center-half_width:center+half_width;
+end
+spectrum = spectrum(indices, :);
+output = ifft(ifftshift(spectrum, 1), [], 1);
+end
+
+function mask = build_hlh_mask(sequence)
+% 有效区固定为H(512)-L(512)-H(512)，两端扩展344列成完整RC掩膜。
+logic_mask = false(1, sequence.logic_length);
+logic_mask(1:512) = true;
+logic_mask(1025:1536) = true;
+full_mask = [ ...
+    repmat(logic_mask(1), 1, sequence.valid_margin), ...
+    logic_mask, ...
+    repmat(logic_mask(end), 1, sequence.valid_margin)];
+if numel(full_mask) ~= sequence.block_width
+    error('scenePercentiles:HLHMaskLength', ...
+        'H-L-H完整掩膜长度与连续回波块不一致。');
+end
+mask = struct("logic", logic_mask, "full", full_mask, ...
+    "boundaries", find(diff(full_mask) ~= 0));
+end
+
+function signal60 = load_echo_block(manifest_row, S60, block_width)
+% 从180MHz轨迹裁出连续块，再按1:3抽取为60MHz复回波。
+persistent cached_path cached_raw
+file_path = string(manifest_row.FilePath(1));
+if isempty(cached_path) || cached_path ~= file_path
+    variable_name = char(manifest_row.EchoVariable(1));
+    loaded = load(file_path, variable_name);
+    if ~isfield(loaded, variable_name)
+        error('scenePercentiles:EchoVariableMissing', ...
+            '回波文件缺少变量%s：%s', variable_name, file_path);
+    end
+    cached_raw = loaded.(variable_name);
+    cached_path = file_path;
+end
+start_index = manifest_row.CStart(1);
+stop_index = start_index + block_width - 1;
+if stop_index > size(cached_raw, 2)
+    error('scenePercentiles:EchoBlockRange', ...
+        '轨迹%s无法裁出指定连续块。', file_path);
+end
+signal60 = cached_raw(1:3:end, start_index:stop_index);
+if size(signal60, 1) < S60.nrn
+    error('scenePercentiles:EchoRows', ...
+        '降至60MHz后的距离维长度不足。');
+end
+signal60 = signal60(1:S60.nrn, :);
+end
+
+function [RC_mix, info] = align_and_mix_rc(RC_H, RC_L, mode_mask, buffer)
+% 汇总两个边界的局部功率，用一个gamma将完整H分支对齐到L分支。
+if ~isequal(size(RC_H), size(RC_L))
+    error('scenePercentiles:RCSizeMismatch', 'H/L RC尺寸不一致。');
+end
+mode_mask = logical(mode_mask(:).');
+if numel(mode_mask) ~= size(RC_H, 2)
+    error('scenePercentiles:RCMaskLength', ...
+        'H-L-H掩膜长度必须等于RC列数。');
+end
+boundaries = find(diff(mode_mask) ~= 0);
+if numel(boundaries) ~= 2
+    error('scenePercentiles:RCBoundaryCount', ...
+        'H-L-H连续块必须包含两个边界。');
+end
+
+power_h = zeros(numel(boundaries), 1);
+power_l = zeros(numel(boundaries), 1);
+for idx = 1:numel(boundaries)
+    boundary = boundaries(idx);
+    left = max(1, boundary-buffer+1):boundary;
+    right = boundary+1:min(size(RC_H, 2), boundary+buffer);
+    if mode_mask(boundary)
+        h_indices = left;
+        l_indices = right;
+    else
+        l_indices = left;
+        h_indices = right;
+    end
+    power_h(idx) = mean(abs(RC_H(:, h_indices)).^2, 'all');
+    power_l(idx) = mean(abs(RC_L(:, l_indices)).^2, 'all');
+end
+pooled_h = mean(power_h);
+pooled_l = mean(power_l);
+if pooled_h <= 1e-12
+    scale_factor = 1;
+else
+    scale_factor = sqrt((pooled_l + eps) / (pooled_h + eps));
+end
+RC_H_aligned = RC_H * scale_factor;
+RC_mix = zeros(size(RC_H), 'like', RC_H);
+RC_mix(:, mode_mask) = RC_H_aligned(:, mode_mask);
+RC_mix(:, ~mode_mask) = RC_L(:, ~mode_mask);
+info = struct( ...
+    "boundaries", boundaries, ...
+    "scale_factor", scale_factor, ...
+    "power_H", pooled_h, ...
+    "power_L", pooled_l, ...
+    "boundary_jump_db", 10 * log10( ...
+    (pooled_h * scale_factor ^ 2 + eps) / (pooled_l + eps)));
+end
+
+function image_roi = focus_base_rc(RC_base, S60, roi_size)
+% 使用允许调用的RCMC和SAR_Imaging完成成像并提取中心幅度ROI。
+if ~isequal(size(RC_base), [S60.nrn, S60.nan])
+    error('scenePercentiles:FocusRCSize', ...
+        '成像RC必须位于FS60基网格。');
+end
+RCMC_out = RCMC(RC_base, S60.lambda, S60.fnrn, S60.fnan, ...
+    S60.R0, S60.C, S60.v);
+image_complex = SAR_Imaging(RCMC_out, S60.lambda, S60.Fs, ...
+    S60.R0, S60.C, S60.v, S60.tnan, S60.Ta, S60.prf);
+row_start = S60.nrn / 2 - S60.R_total / 2 + 1;
+row_end = S60.nrn / 2 + S60.R_total / 2;
+column_start = S60.nan / 2 - S60.A_num / 2;
+column_end = S60.nan / 2 + S60.A_num / 2 - 1;
+full_roi = abs(image_complex(row_start:row_end, ...
+    column_start:column_end));
+image_roi = crop_center(full_roi, roi_size);
+end
+
+function image_roi = generate_gt_image(signal, S60, roi_size)
+% 未量化60MHz复回波的标准成像结果，作为GT分位数像素来源。
+RC_gt = Range_Compress(signal, S60.fc, S60.tnrn, S60.gama, ...
+    S60.R0, S60.C, S60.Fs, S60.Tp);
+image_roi = focus_base_rc(RC_gt, S60, roi_size);
+end
+
+function output = crop_center(input, target_size)
+row_start = floor((size(input, 1) - target_size) / 2) + 1;
+column_start = floor((size(input, 2) - target_size) / 2) + 1;
+if row_start < 1 || column_start < 1
+    error('scenePercentiles:CropCenterSize', ...
+        '中心裁剪尺寸超过输入图像。');
+end
+output = input(row_start:row_start+target_size-1, ...
+    column_start:column_start+target_size-1);
+end
+
 function result = process_scene_parameter(cfg, S60, scene_manifest, ...
-        pair, parameters, protocol, source_signature, gt_signature, ...
-        work_directory, need_gt)
+        pair, parameters, protocol, work_directory, need_gt)
 joint_directory = fullfile(work_directory, "joint");
 gt_directory = fullfile(work_directory, "gt");
 checkpoint_path = fullfile(work_directory, "checkpoint.mat");
-sarvalid.ensure_dir(joint_directory);
+ensure_directory(joint_directory);
 if need_gt
-    sarvalid.ensure_dir(gt_directory);
+    ensure_directory(gt_directory);
 end
 
-signature = struct( ...
-    "version", "range_2dsft_scene_percentiles_checkpoint_v1", ...
+checkpoint_config = struct( ...
+    "version", "range_2dsft_scene_percentiles_checkpoint_v2", ...
     "scene", string(scene_manifest.Scene(1)), ...
-    "source_signature", source_signature, ...
     "manifest", scene_manifest, ...
     "parameters", parameters, ...
     "protocol", protocol, ...
-    "gt_signature", gt_signature, ...
     "include_gt", need_gt);
 sequence_count = height(scene_manifest);
 initial_state = struct( ...
+    "config", checkpoint_config, ...
     "completed_sequences", 0, ...
     "scale_factors", nan(sequence_count, 1), ...
     "boundary_jump_db", nan(sequence_count, 1));
-state = sarvalid.load_checkpoint(checkpoint_path, signature, initial_state);
+state = load_checkpoint(checkpoint_path, checkpoint_config, initial_state);
 verify_completed_chunks( ...
     state.completed_sequences, joint_directory, gt_directory, need_gt);
 
 frame_count = cfg.sequence.n_frames;
 pixels_per_image = protocol.roi_size ^ 2;
-mask = sarvalid.build_hlh_mask(cfg.sequence);
+mask = build_hlh_mask(cfg.sequence);
 for sequence_idx = state.completed_sequences + 1:sequence_count
-    signal = sarvalid.load_echo_block( ...
+    signal = load_echo_block( ...
         scene_manifest(sequence_idx, :), S60, cfg.sequence.block_width);
     if isreal(signal) || ~isequal(size(signal), ...
             [cfg.sequence.signal_height, cfg.sequence.block_width])
@@ -283,9 +547,9 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
             scene_manifest.SequenceID(sequence_idx));
     end
 
-    [RC_H, ~] = sarvalid.generate_base_rc(signal, S60, pair.H);
-    [RC_L, ~] = sarvalid.generate_base_rc(signal, S60, pair.L);
-    [~, mix_info] = sarvalid.align_and_mix_rc( ...
+    RC_H = generate_range_2dsft_rc(signal, S60, pair.H);
+    RC_L = generate_range_2dsft_rc(signal, S60, pair.L);
+    [~, mix_info] = align_and_mix_rc( ...
         RC_H, RC_L, mask.full, protocol.energy_buffer);
     RC_H = RC_H * mix_info.scale_factor;
 
@@ -295,9 +559,9 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
     end
     for frame_idx = 1:frame_count
         columns = frame_columns(cfg.sequence, frame_idx);
-        h_image = sarvalid.focus_base_rc( ...
+        h_image = focus_base_rc( ...
             RC_H(:, columns), S60, protocol.roi_size);
-        l_image = sarvalid.focus_base_rc( ...
+        l_image = focus_base_rc( ...
             RC_L(:, columns), S60, protocol.roi_size);
         frame_pool = make_joint_hl_pool(h_image, l_image);
         joint_start = (frame_idx - 1) * 2 * pixels_per_image + 1;
@@ -305,7 +569,7 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
         joint_values(joint_start:joint_stop) = frame_pool;
 
         if need_gt
-            gt_image = sarvalid.generate_gt_image( ...
+            gt_image = generate_gt_image( ...
                 signal(:, columns), S60, protocol.roi_size);
             gt_start = (frame_idx - 1) * pixels_per_image + 1;
             gt_stop = frame_idx * pixels_per_image;
@@ -314,16 +578,16 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
     end
 
     chunk_name = sprintf('chunk_%06d.mat', sequence_idx);
-    sarvalid.atomic_save(fullfile(joint_directory, chunk_name), ...
+    atomic_save(fullfile(joint_directory, chunk_name), ...
         struct("values", joint_values));
     if need_gt
-        sarvalid.atomic_save(fullfile(gt_directory, chunk_name), ...
+        atomic_save(fullfile(gt_directory, chunk_name), ...
             struct("values", gt_values));
     end
     state.completed_sequences = sequence_idx;
     state.scale_factors(sequence_idx) = mix_info.scale_factor;
     state.boundary_jump_db(sequence_idx) = mix_info.boundary_jump_db;
-    sarvalid.atomic_save(checkpoint_path, struct("state", state));
+    atomic_save(checkpoint_path, struct("state", state));
     fprintf('    序列 %d/%d 完成。\n', sequence_idx, sequence_count);
 end
 
@@ -331,14 +595,10 @@ percentages = [protocol.low_percentile, protocol.high_percentile];
 input_stats = calculate_chunk_percentiles( ...
     joint_directory, percentages, "JointHL", ...
     2 * sequence_count * frame_count);
-input_stats.signature = sarvalid.sha256_text(string(jsonencode(struct( ...
-    "source", source_signature, "parameters", parameters, ...
-    "protocol", protocol))));
 
 if need_gt
     gt_stats = calculate_chunk_percentiles( ...
         gt_directory, percentages, "GT", sequence_count * frame_count);
-    gt_stats.signature = gt_signature;
 else
     gt_stats = struct();
 end
@@ -351,14 +611,7 @@ audit = struct( ...
     "ScaleFactorMean", mean(state.scale_factors), ...
     "ScaleFactorMax", max(state.scale_factors), ...
     "MaxAbsBoundaryJumpDB", max(abs(state.boundary_jump_db)), ...
-    "CompletedSequences", state.completed_sequences, ...
-    "SourceSignature", source_signature, ...
-    "CheckpointSignature", sarvalid.sha256_text( ...
-    string(jsonencode(struct( ...
-    "source_signature", source_signature, ...
-    "parameters", parameters, ...
-    "protocol", protocol, ...
-    "include_gt", need_gt)))));
+    "CompletedSequences", state.completed_sequences);
 if any(~isfinite([audit.ScaleFactorMin, audit.ScaleFactorMean, ...
         audit.ScaleFactorMax, audit.MaxAbsBoundaryJumpDB]))
     error('scenePercentiles:NonfiniteAudit', ...
@@ -384,24 +637,7 @@ for idx = 1:completed
 end
 end
 
-function signature = manifest_signature(manifest)
-signature = sarvalid.sha256_text( ...
-    string(jsonencode(table2struct(manifest))));
-end
-
-function signature = make_gt_signature(header)
-value = struct( ...
-    "source_signature", header.source_signature, ...
-    "working_echo", header.protocol.working_echo, ...
-    "roi_size", header.protocol.roi_size, ...
-    "low_percentile", header.protocol.low_percentile, ...
-    "high_percentile", header.protocol.high_percentile, ...
-    "sequence", header.protocol.sequence, ...
-    "imaging", header.protocol.imaging);
-signature = sarvalid.sha256_text(string(jsonencode(value)));
-end
-
-function gt_stats = load_existing_gt(file_path, header, gt_signature)
+function gt_stats = load_existing_gt(file_path, header)
 gt_stats = struct();
 if ~isfile(file_path)
     return;
@@ -413,26 +649,36 @@ if ~isfield(loaded, 'scene_stats')
 end
 existing = loaded.scene_stats;
 required = ["schema_version", "scene_name", "scene_key", ...
-    "protocol", "source_manifest", "source_signature", "gt"];
+    "protocol", "source_manifest", "gt"];
 if ~all(isfield(existing, required)) || ...
         string(existing.schema_version) ~= string(header.schema_version) || ...
         string(existing.scene_name) ~= string(header.scene_name) || ...
         string(existing.scene_key) ~= string(header.scene_key) || ...
         ~isequaln(existing.protocol, header.protocol) || ...
-        ~isequaln(existing.source_manifest, header.source_manifest) || ...
-        string(existing.source_signature) ~= string(header.source_signature)
-    error('scenePercentiles:SourceSignatureMismatch', ...
+        ~isequaln(existing.source_manifest, header.source_manifest)
+    error('scenePercentiles:SceneSourceMismatch', ...
         '已有场景MAT与当前数据或协议不一致：%s', file_path);
-end
-if ~isfield(existing.gt, "signature") || ...
-        string(existing.gt.signature) ~= string(gt_signature)
-    error('scenePercentiles:GTSignatureMismatch', ...
-        '已有场景MAT的GT签名不一致：%s', file_path);
 end
 gt_stats = existing.gt;
 end
 
-function value = imaging_signature(S60)
+function exists = scene_entry_exists(file_path, parameter_key)
+% 已写入场景MAT的参数不重复成像；残留work目录可安全清理。
+exists = false;
+if ~isfile(file_path)
+    return;
+end
+loaded = load(file_path, 'scene_stats');
+if ~isfield(loaded, 'scene_stats') || ...
+        ~isfield(loaded.scene_stats, 'entries') || ...
+        isempty(loaded.scene_stats.entries)
+    return;
+end
+keys = string({loaded.scene_stats.entries.parameter_key});
+exists = any(keys == string(parameter_key));
+end
+
+function value = imaging_parameters(S60)
 names = ["fc", "B", "Fs", "prf", "R0", "C", "v", ...
     "Tp", "Ta", "nrn", "nan", "R_total", "A_num"];
 value = struct();
@@ -648,10 +894,6 @@ if isfile(file_path)
     end
     scene_stats = loaded.scene_stats;
     verify_scene_header(scene_stats, header, file_path);
-    if string(scene_stats.gt.signature) ~= string(gt_stats.signature)
-        error('scenePercentiles:GTSignatureMismatch', ...
-            '已有GT统计与当前协议不一致：%s', file_path);
-    end
 else
     scene_stats = header;
     scene_stats.gt = gt_stats;
@@ -680,20 +922,17 @@ else
     scene_stats.entries(match) = entry;
 end
 scene_stats.updated_at = now_text;
-sarvalid.atomic_save(file_path, struct("scene_stats", scene_stats));
+atomic_save(file_path, struct("scene_stats", scene_stats));
 end
 
 function verify_scene_header(scene_stats, header, file_path)
 required = ["schema_version", "scene_name", "scene_key", ...
-    "protocol", "source_manifest", "source_signature", ...
-    "gt", "entries", "created_at"];
+    "protocol", "source_manifest", "gt", "entries", "created_at"];
 if ~all(isfield(scene_stats, required)) || ...
         string(scene_stats.schema_version) ~= string(header.schema_version) || ...
         string(scene_stats.scene_name) ~= string(header.scene_name) || ...
         string(scene_stats.scene_key) ~= string(header.scene_key) || ...
         ~isequaln(scene_stats.protocol, header.protocol) || ...
-        string(scene_stats.source_signature) ~= ...
-        string(header.source_signature) || ...
         ~isequaln(scene_stats.source_manifest, header.source_manifest)
     error('scenePercentiles:SceneSourceMismatch', ...
         '已有场景MAT与当前数据清单或协议不一致：%s', file_path);
@@ -705,6 +944,49 @@ if isempty(input)
     output = row;
 else
     output = [input; row];
+end
+end
+
+function ensure_directory(path)
+if ~isfolder(path)
+    [ok, message] = mkdir(path);
+    if ~ok
+        error('scenePercentiles:CreateDirectory', ...
+            '无法创建目录%s：%s', path, message);
+    end
+end
+end
+
+function state = load_checkpoint(file_path, checkpoint_config, initial_state)
+% 不计算哈希；直接保存并逐字段比较完整配置和场景清单。
+state = initial_state;
+if ~isfile(file_path)
+    return;
+end
+loaded = load(file_path, 'state');
+if ~isfield(loaded, 'state') || ~isfield(loaded.state, 'config')
+    error('scenePercentiles:CheckpointSchema', ...
+        'checkpoint缺少完整配置：%s', file_path);
+end
+if ~isequaln(loaded.state.config, checkpoint_config)
+    error('scenePercentiles:CheckpointConfigMismatch', ...
+        'checkpoint配置或场景清单与当前运行不一致：%s', file_path);
+end
+state = loaded.state;
+end
+
+function atomic_save(file_path, payload)
+% 先写临时MAT，再替换目标文件，避免中断留下半写文件。
+output_directory = string(fileparts(file_path));
+if strlength(output_directory) > 0
+    ensure_directory(output_directory);
+end
+temporary_path = string(file_path) + ".tmp";
+save(temporary_path, '-struct', 'payload', '-v7.3');
+[ok, message] = movefile(temporary_path, file_path, 'f');
+if ~ok
+    error('scenePercentiles:AtomicMove', ...
+        '无法更新%s：%s', file_path, message);
 end
 end
 
