@@ -13,6 +13,7 @@ results_generator_comparison
 results_generator_confirmation_v2/
 results_range_2dsft_v3/
 results_hlh_normalization_ablation/
+results_range_2dsft_v4_str_ablation/
 *.mat
 *.jpg
 *.png
