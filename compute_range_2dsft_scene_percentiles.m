@@ -7,8 +7,8 @@ clear; clc;
 % 每个rstart文件均匀抽取10条H-L-H序列；同一参数下，H分支先按
 % RC边界能量缩放，再与L分支的纯分支成像结果等权汇总为JointHL。
 %
-% 完整运行计算量很大。首次检查建议保持DRY_RUN=true，确认清单和
-% 参数键后再由用户手动改为false运行。
+% 直接运行本脚本即开始正式统计。长时间任务按“场景+参数+序列”
+% 自动保存checkpoint，中断后使用相同配置重新运行即可继续。
 %% ========================================================================
 
 %% ============================== 参数区 ==================================
@@ -27,8 +27,6 @@ LOW_PERCENTILE = 0.99;
 HIGH_PERCENTILE = 99.9;
 ROI_SIZE = 600;
 ENERGY_BUFFER = 64;
-RESUME = true;
-DRY_RUN = default_dry_run();
 
 %% ========================== 仓库与公共配置 ===============================
 SCRIPT_PATH = string(mfilename('fullpath'));
@@ -44,7 +42,7 @@ WORK_ROOT = fullfile(OUTPUT_ROOT, "_work");
 protocol = build_protocol(cfg, S60, BLOCKS_PER_FILE, ...
     LOW_PERCENTILE, HIGH_PERCENTILE, ROI_SIZE, ENERGY_BUFFER);
 validate_parameters(PARAMETERS, cfg, S60, protocol);
-manifest = sarvalid.build_scene_percentile_manifest(cfg, BLOCKS_PER_FILE);
+manifest = build_scene_manifest(cfg, BLOCKS_PER_FILE);
 parameter_keys = build_parameter_keys(PARAMETERS, protocol);
 
 fprintf('场景级分位数清单：%d个场景，%d个文件，%d条序列。\n', ...
@@ -54,12 +52,6 @@ for parameter_idx = 1:height(PARAMETERS)
     fprintf('  参数%d：%s\n', parameter_idx, parameter_keys(parameter_idx));
 end
 print_scene_counts(manifest);
-
-if DRY_RUN
-    fprintf(['DRY_RUN完成：仅检查了全部文件、均匀CStart、参数与' ...
-        'Nyquist约束；未写入统计MAT。\n']);
-    return;
-end
 
 sarvalid.ensure_dir(OUTPUT_ROOT);
 sarvalid.ensure_dir(WORK_ROOT);
@@ -100,7 +92,7 @@ for scene_idx = 1:numel(scenes)
         result = process_scene_parameter( ...
             cfg, S60, scene_manifest, pair, parameters, protocol, ...
             source_signature, gt_signature, work_directory, ...
-            need_gt, RESUME);
+            need_gt);
         if need_gt
             gt_stats = result.gt_stats;
         end
@@ -113,7 +105,7 @@ for scene_idx = 1:numel(scenes)
             "audit", result.audit, ...
             "created_at", "", ...
             "updated_at", "");
-        sarvalid.upsert_scene_percentile_stats( ...
+        upsert_scene_stats( ...
             output_path, header, gt_stats, entry);
         remove_completed_work_directory(work_directory, WORK_ROOT);
         fprintf('    已更新%s。\n', output_path);
@@ -180,7 +172,7 @@ for idx = 1:height(parameters)
     value = parameter_struct(parameters(idx, :));
     pair = make_range_sft_pair(cfg, value);
     resolve_pair_grids(pair, cfg, S60);
-    keys(idx) = sarvalid.range_2dsft_percentile_key(value, protocol);
+    keys(idx) = make_parameter_key(value, protocol);
 end
 if numel(unique(keys)) ~= numel(keys)
     error('scenePercentiles:DuplicateParameters', ...
@@ -191,7 +183,7 @@ end
 function keys = build_parameter_keys(parameters, protocol)
 keys = strings(height(parameters), 1);
 for idx = 1:height(parameters)
-    keys(idx) = sarvalid.range_2dsft_percentile_key( ...
+    keys(idx) = make_parameter_key( ...
         parameter_struct(parameters(idx, :)), protocol);
 end
 end
@@ -251,7 +243,7 @@ end
 
 function result = process_scene_parameter(cfg, S60, scene_manifest, ...
         pair, parameters, protocol, source_signature, gt_signature, ...
-        work_directory, need_gt, resume_enabled)
+        work_directory, need_gt)
 joint_directory = fullfile(work_directory, "joint");
 gt_directory = fullfile(work_directory, "gt");
 checkpoint_path = fullfile(work_directory, "checkpoint.mat");
@@ -274,17 +266,7 @@ initial_state = struct( ...
     "completed_sequences", 0, ...
     "scale_factors", nan(sequence_count, 1), ...
     "boundary_jump_db", nan(sequence_count, 1));
-if resume_enabled
-    state = sarvalid.load_checkpoint( ...
-        checkpoint_path, signature, initial_state);
-else
-    state = initial_state;
-    state.signature = signature;
-    if isfile(checkpoint_path)
-        error('scenePercentiles:CheckpointExists', ...
-            'RESUME=false但checkpoint已存在：%s', checkpoint_path);
-    end
-end
+state = sarvalid.load_checkpoint(checkpoint_path, signature, initial_state);
 verify_completed_chunks( ...
     state.completed_sequences, joint_directory, gt_directory, need_gt);
 
@@ -317,7 +299,7 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
             RC_H(:, columns), S60, protocol.roi_size);
         l_image = sarvalid.focus_base_rc( ...
             RC_L(:, columns), S60, protocol.roi_size);
-        frame_pool = sarvalid.joint_hl_pixel_pool(h_image, l_image);
+        frame_pool = make_joint_hl_pool(h_image, l_image);
         joint_start = (frame_idx - 1) * 2 * pixels_per_image + 1;
         joint_stop = frame_idx * 2 * pixels_per_image;
         joint_values(joint_start:joint_stop) = frame_pool;
@@ -346,7 +328,7 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
 end
 
 percentages = [protocol.low_percentile, protocol.high_percentile];
-input_stats = sarvalid.exact_percentiles_from_chunks( ...
+input_stats = calculate_chunk_percentiles( ...
     joint_directory, percentages, "JointHL", ...
     2 * sequence_count * frame_count);
 input_stats.signature = sarvalid.sha256_text(string(jsonencode(struct( ...
@@ -354,7 +336,7 @@ input_stats.signature = sarvalid.sha256_text(string(jsonencode(struct( ...
     "protocol", protocol))));
 
 if need_gt
-    gt_stats = sarvalid.exact_percentiles_from_chunks( ...
+    gt_stats = calculate_chunk_percentiles( ...
         gt_directory, percentages, "GT", sequence_count * frame_count);
     gt_stats.signature = gt_signature;
 else
@@ -461,6 +443,271 @@ for name = names
 end
 end
 
+function manifest = build_scene_manifest(cfg, blocks_per_file)
+% 枚举场景中的全部rstart文件，并在每个文件内均匀选取连续块。
+manifest = table();
+sequence_id = 0;
+for scene_idx = 1:numel(cfg.dataset_names)
+    scene = string(cfg.dataset_names(scene_idx));
+    scene_directory = fullfile(string(cfg.data_root), scene);
+    if ~isfolder(scene_directory)
+        error('scenePercentiles:SceneDirectoryMissing', ...
+            '场景目录不存在：%s', scene_directory);
+    end
+
+    files = sort_echo_files(dir(fullfile(scene_directory, "rstart*.mat")));
+    if isempty(files)
+        error('scenePercentiles:EchoFilesMissing', ...
+            '场景%s中没有rstart*.mat。', scene);
+    end
+    scene_key = make_scene_key(scene);
+
+    for file_idx = 1:numel(files)
+        file = files(file_idx);
+        file_path = string(fullfile(file.folder, file.name));
+        variables = whos('-file', file_path);
+        if isempty(variables) || numel(variables(1).size) ~= 2
+            error('scenePercentiles:EchoSchema', ...
+                '回波文件缺少二维变量：%s', file_path);
+        end
+        raw_width = variables(1).size(2);
+        max_start = raw_width - cfg.sequence.block_width + 1;
+        if max_start < blocks_per_file
+            error('scenePercentiles:EchoTooShort', ...
+                '文件%s无法抽取%d个宽度为%d的不同连续块。', ...
+                file.name, blocks_per_file, cfg.sequence.block_width);
+        end
+        starts = unique(round(linspace(1, max_start, blocks_per_file)), ...
+            'stable');
+        if numel(starts) ~= blocks_per_file
+            error('scenePercentiles:StartsNotUnique', ...
+                '文件%s无法得到%d个不同的均匀起点。', ...
+                file.name, blocks_per_file);
+        end
+
+        for block_idx = 1:blocks_per_file
+            sequence_id = sequence_id + 1;
+            SequenceID = sequence_id;
+            SceneIdx = scene_idx;
+            Scene = scene;
+            SceneKey = scene_key;
+            FileIdx = file_idx;
+            File = string(file.name);
+            FilePath = file_path;
+            EchoVariable = string(variables(1).name);
+            CStart = starts(block_idx);
+            BlockWidth = cfg.sequence.block_width;
+            RawWidth = raw_width;
+            BlockIndex = block_idx;
+            FileBytes = double(file.bytes);
+            FileDatenum = double(file.datenum);
+            row = table(SequenceID, SceneIdx, Scene, SceneKey, FileIdx, ...
+                File, FilePath, EchoVariable, CStart, BlockWidth, RawWidth, ...
+                BlockIndex, FileBytes, FileDatenum);
+            manifest = append_table(manifest, row);
+        end
+    end
+end
+end
+
+function files = sort_echo_files(files)
+% 优先按rstart后的数字排序，无法解析的文件再按名称排序。
+numbers = inf(numel(files), 1);
+for idx = 1:numel(files)
+    token = regexp(files(idx).name, ...
+        '^rstart\s*([0-9]+)\.mat$', 'tokens', 'once', 'ignorecase');
+    if ~isempty(token)
+        numbers(idx) = str2double(token{1});
+    end
+end
+names = lower(string({files.name})).';
+order = table(numbers, names, (1:numel(files)).', ...
+    'VariableNames', ["Number", "Name", "OriginalIndex"]);
+order = sortrows(order, ["Number", "Name"]);
+files = files(order.OriginalIndex);
+end
+
+function key = make_scene_key(scene_name)
+% 将已知场景名转换为稳定、可读的输出文件名。
+known_names = ["SAR_Dataset_Bangkok_1", "SAR_Dataset_city1_histeq", ...
+    "SAR_Dataset_city2_histeq", "SAR_Dataset_SAR_figure", ...
+    "SAR_Dataset_filed", "SAR_Dataset_port", "SAR_Dataset_suburb"];
+known_keys = ["bangkok", "city1_histeq", "city2_histeq", ...
+    "sar_figure", "filed", "port", "suburb"];
+index = find(strcmpi(string(scene_name), known_names), 1);
+if ~isempty(index)
+    key = known_keys(index);
+    return;
+end
+key = lower(regexprep(string(scene_name), '^SAR_Dataset_', ''));
+key = strip(regexprep(key, '[^a-z0-9_]+', '_'), '_');
+if strlength(key) == 0
+    error('scenePercentiles:InvalidSceneKey', ...
+        '场景名称无法转换为文件键：%s', scene_name);
+end
+end
+
+function values = make_joint_hl_pool(h_image, l_image)
+% H已完成能量对齐；同尺寸连接确保H/L在统计中具有相同像素权重。
+if ~isequal(size(h_image), size(l_image)) || ...
+        ~isreal(h_image) || ~isreal(l_image)
+    error('scenePercentiles:JointHLImageMismatch', ...
+        'JointHL要求H/L为同尺寸实数幅度图。');
+end
+values = [single(h_image(:)); single(l_image(:))];
+end
+
+function stats = calculate_chunk_percentiles( ...
+        chunk_directory, percentages, modality, image_count)
+% 从磁盘分块建立tall列向量，避免一次把全场景像素载入内存。
+files = dir(fullfile(chunk_directory, "chunk_*.mat"));
+[~, order] = sort(lower(string({files.name})));
+files = files(order);
+if isempty(files)
+    error('scenePercentiles:PercentileChunksMissing', ...
+        '没有找到分位数数据块：%s', chunk_directory);
+end
+
+paths = strings(numel(files), 1);
+pixel_count = 0;
+for idx = 1:numel(files)
+    paths(idx) = string(fullfile(files(idx).folder, files(idx).name));
+    variables = whos('-file', paths(idx));
+    match = strcmp({variables.name}, 'values');
+    if sum(match) ~= 1
+        error('scenePercentiles:ChunkSchema', ...
+            '数据块必须且只能包含一个values变量：%s', paths(idx));
+    end
+    variable = variables(match);
+    if ~strcmp(variable.class, 'single') || ...
+            numel(variable.size) ~= 2 || variable.size(2) ~= 1
+        error('scenePercentiles:ChunkType', ...
+            'chunk.values必须是single列向量：%s', paths(idx));
+    end
+    pixel_count = pixel_count + prod(variable.size);
+end
+
+datastore_value = fileDatastore(paths, ...
+    'ReadFcn', @read_chunk_values, 'UniformRead', true);
+mapreducer(0); % 使用本地MATLAB会话，不依赖并行许可证。
+tall_values = tall(datastore_value);
+limits = gather(prctile(tall_values, percentages, Method="midpoint"));
+limits = double(limits(:));
+if numel(limits) ~= 2 || any(~isfinite(limits)) || limits(2) <= limits(1)
+    error('scenePercentiles:DegeneratePercentiles', ...
+        '%s分位数范围无效。', modality);
+end
+stats = struct("Modality", modality, "VMin", limits(1), ...
+    "VMax", limits(2), "ImageCount", image_count, ...
+    "PixelCount", pixel_count, "ChunkCount", numel(files), ...
+    "LowPercentile", percentages(1), ...
+    "HighPercentile", percentages(2), ...
+    "Method", "midpoint_exact_tall");
+end
+
+function values = read_chunk_values(file_path)
+loaded = load(file_path, 'values');
+if ~isfield(loaded, 'values')
+    error('scenePercentiles:ChunkSchema', ...
+        '数据块缺少values变量：%s', file_path);
+end
+values = loaded.values(:);
+end
+
+function key = make_parameter_key(parameters, protocol)
+% 参数、相位和归一化协议全部进入键，避免误用不匹配的统计量。
+key = "range_2d_sft" + ...
+    "_qh" + encode_number(parameters.QHigh) + ...
+    "_ql" + encode_number(parameters.QLow) + ...
+    "_s" + encode_number(parameters.STRdB) + ...
+    "_fr" + encode_number(parameters.FrOverBr) + ...
+    "_fa" + encode_number(parameters.FaOverBa) + ...
+    "_phi" + encode_number(parameters.Phi0) + ...
+    "_lp" + encode_number(protocol.low_percentile) + ...
+    "_hp" + encode_number(protocol.high_percentile) + ...
+    "_roi" + encode_number(protocol.roi_size) + ...
+    "_eb" + encode_number(protocol.energy_buffer);
+end
+
+function value = encode_number(number)
+value = replace(string(sprintf('%.12g', double(number))), "-", "m");
+value = replace(value, ".", "p");
+value = replace(value, "+", "");
+end
+
+function scene_stats = upsert_scene_stats( ...
+        file_path, header, gt_stats, entry)
+% 一个场景MAT保存共享GT统计及多组Range+2D-SFT输入统计。
+now_text = string(datetime('now', ...
+    'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX'));
+if isfile(file_path)
+    loaded = load(file_path, 'scene_stats');
+    if ~isfield(loaded, 'scene_stats')
+        error('scenePercentiles:SceneFileSchema', ...
+            'MAT文件缺少scene_stats：%s', file_path);
+    end
+    scene_stats = loaded.scene_stats;
+    verify_scene_header(scene_stats, header, file_path);
+    if string(scene_stats.gt.signature) ~= string(gt_stats.signature)
+        error('scenePercentiles:GTSignatureMismatch', ...
+            '已有GT统计与当前协议不一致：%s', file_path);
+    end
+else
+    scene_stats = header;
+    scene_stats.gt = gt_stats;
+    scene_stats.entries = struct([]);
+    scene_stats.created_at = now_text;
+end
+
+entry.updated_at = now_text;
+keys = strings(0, 1);
+if ~isempty(scene_stats.entries)
+    keys = string({scene_stats.entries.parameter_key}).';
+end
+match = find(keys == string(entry.parameter_key));
+if numel(match) > 1
+    error('scenePercentiles:DuplicateParameterKey', ...
+        '场景MAT中存在重复参数键：%s', entry.parameter_key);
+elseif isempty(match)
+    entry.created_at = now_text;
+    if isempty(scene_stats.entries)
+        scene_stats.entries = entry;
+    else
+        scene_stats.entries(end + 1) = entry;
+    end
+else
+    entry.created_at = scene_stats.entries(match).created_at;
+    scene_stats.entries(match) = entry;
+end
+scene_stats.updated_at = now_text;
+sarvalid.atomic_save(file_path, struct("scene_stats", scene_stats));
+end
+
+function verify_scene_header(scene_stats, header, file_path)
+required = ["schema_version", "scene_name", "scene_key", ...
+    "protocol", "source_manifest", "source_signature", ...
+    "gt", "entries", "created_at"];
+if ~all(isfield(scene_stats, required)) || ...
+        string(scene_stats.schema_version) ~= string(header.schema_version) || ...
+        string(scene_stats.scene_name) ~= string(header.scene_name) || ...
+        string(scene_stats.scene_key) ~= string(header.scene_key) || ...
+        ~isequaln(scene_stats.protocol, header.protocol) || ...
+        string(scene_stats.source_signature) ~= ...
+        string(header.source_signature) || ...
+        ~isequaln(scene_stats.source_manifest, header.source_manifest)
+    error('scenePercentiles:SceneSourceMismatch', ...
+        '已有场景MAT与当前数据清单或协议不一致：%s', file_path);
+end
+end
+
+function output = append_table(input, row)
+if isempty(input)
+    output = row;
+else
+    output = [input; row];
+end
+end
+
 function print_scene_counts(manifest)
 scenes = unique(string(manifest.Scene), 'stable');
 for idx = 1:numel(scenes)
@@ -468,11 +715,6 @@ for idx = 1:numel(scenes)
     fprintf('  %-28s 文件=%d，序列=%d\n', scenes(idx), ...
         numel(unique(rows.FilePath)), height(rows));
 end
-end
-
-function value = default_dry_run()
-% 默认先只检查清单，避免误启动长时间成像统计。
-value = true;
 end
 
 function remove_completed_work_directory(work_directory, work_root)
